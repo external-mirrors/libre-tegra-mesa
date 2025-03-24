@@ -54,139 +54,93 @@ grate_screen_get_screen_fd(struct pipe_screen *pscreen)
    return grate_screen(pscreen)->fd;
 }
 
-static int
-grate_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
+static void
+grate_screen_init_caps(struct grate_screen *screen)
 {
-   switch (param) {
-   case PIPE_CAP_NPOT_TEXTURES:
-      return 1; /* not really, but mesa requires it for now! */
+   struct pipe_caps *caps = (struct pipe_caps *)&screen->base.caps;
 
-   case PIPE_CAP_MAX_RENDER_TARGETS:
-      return 8; /* ??? */
+   u_init_pipe_screen_caps(&screen->base, 1);
 
-   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
-      return 2048;
+   caps->npot_textures = true; /* not really, but mesa requires it for now! */
 
-   case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
-      return 0;
+   caps->max_render_targets = 8; /* ??? */
 
-   case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-      return 16; /* ??? */
+   caps->max_texture_2d_size = 2048;
 
-   case PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART:
-      return 0;
+   caps->max_texture_3d_levels = 0;
 
-   case PIPE_CAP_SUPPORTED_PRIM_MODES:
-      return BITFIELD_BIT(MESA_PRIM_POINTS) |
-             BITFIELD_BIT(MESA_PRIM_LINES) |
-             BITFIELD_BIT(MESA_PRIM_LINE_LOOP) |
-             BITFIELD_BIT(MESA_PRIM_LINE_STRIP) |
-             BITFIELD_BIT(MESA_PRIM_TRIANGLES) |
-             BITFIELD_BIT(MESA_PRIM_TRIANGLE_STRIP) |
-             BITFIELD_BIT(MESA_PRIM_TRIANGLE_FAN);
+   caps->max_texture_cube_levels = 16; /* ??? */
 
-   case PIPE_CAP_BLEND_EQUATION_SEPARATE:
-      return 1;
+   caps->supported_prim_modes_with_restart = 0;
 
-   case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
-   case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-      return 1; /* well, not quite. but perhaps close enough? */
+   caps->supported_prim_modes =
+      BITFIELD_BIT(MESA_PRIM_POINTS) |
+      BITFIELD_BIT(MESA_PRIM_LINES) |
+      BITFIELD_BIT(MESA_PRIM_LINE_LOOP) |
+      BITFIELD_BIT(MESA_PRIM_LINE_STRIP) |
+      BITFIELD_BIT(MESA_PRIM_TRIANGLES) |
+      BITFIELD_BIT(MESA_PRIM_TRIANGLE_STRIP) |
+      BITFIELD_BIT(MESA_PRIM_TRIANGLE_FAN);
 
-   case PIPE_CAP_MIN_TEXEL_OFFSET:
-   case PIPE_CAP_MAX_TEXEL_OFFSET:
-      return 0;
+   caps->blend_equation_separate = true;
 
-   case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
-      return 1; /* probably irrelevant for GLES2 */
+   /* well, not quite. but perhaps close enough? */
+   caps->fragment_shader_texture_lod = true;
+   caps->fragment_shader_derivatives = true;
 
-   case PIPE_CAP_VERTEX_COLOR_CLAMPED:
-      return 0; /* probably irrelevant for GLES2 */
+   caps->min_texel_offset = caps->max_texel_offset = 0;
 
-   case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 120; /* no clue */
+   caps->vertex_color_unclamped = true; /* probably irrelevant for GLES2 */
 
-   case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
-      return 4; /* DWORD aligned, can do pure data GATHER */
+   caps->vertex_color_clamped = false; /* probably irrelevant for GLES2 */
 
-   case PIPE_CAP_TEXTURE_TRANSFER_MODES:
-      return PIPE_TEXTURE_TRANSFER_BLIT;
+   caps->glsl_feature_level = 120; /* no clue */
 
-   case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
-      return 1;
+   caps->constant_buffer_offset_alignment = 4; /* DWORD aligned, can do pure data GATHER */
 
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT: /* dunno */
-      return 0;
+   caps->texture_transfer_modes = PIPE_TEXTURE_TRANSFER_BLIT;
 
-   case PIPE_CAP_VENDOR_ID:
-      return 0x10de;
+   caps->mixed_framebuffer_sizes = true;
 
-   case PIPE_CAP_DEVICE_ID:
-      return 0xFFFFFFFF;
+   caps->buffer_map_persistent_coherent = false; /* dunno */
 
-   case PIPE_CAP_ACCELERATED:
-      return 1;
+   caps->vendor_id = 0x10de;
 
-   case PIPE_CAP_VIDEO_MEMORY:
-      return 0;
+   caps->device_id = 0xFFFFFFFF;
 
-   case PIPE_CAP_UMA:
-      return 1;
+   caps->accelerated = 1;
 
-   case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
-      return (1 << 24) - 1;
+   caps->video_memory = 0;
 
-   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
-      return 1; /* probably true ? */
+   caps->uma = 1;
 
-   case PIPE_CAP_FBFETCH: /* TODO: supported, but let's enable later */
-   case PIPE_CAP_CAN_BIND_CONST_BUFFER_AS_VERTEX: /* TODO: probably */
-   case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION: /* TODO: probably */
-      return 0;
+   caps->max_vertex_attrib_stride = (1 << 24) - 1;
 
-   case PIPE_CAP_MAX_VARYINGS:
-      return 16;
+   caps->mixed_color_depth_bits = 1; /* probably true ? */
 
-   default:
-      return u_pipe_screen_get_param_defaults(pscreen, param);
-   }
-}
+   caps->fbfetch = false; /* TODO: supported, but let's enable later */
+   caps->can_bind_const_buffer_as_vertex = false; /* TODO: probably */
+   caps->allow_mapped_buffers_during_execution = false; /* TODO: probably */
 
-static float
-grate_screen_get_paramf(struct pipe_screen *pscreen,
-                        enum pipe_capf param)
-{
-   switch (param) {
-   case PIPE_CAPF_MIN_LINE_WIDTH:
-   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
-   case PIPE_CAPF_MIN_POINT_SIZE:
-   case PIPE_CAPF_MIN_POINT_SIZE_AA:
-      return 1.0f; /* no clue */
+   caps->max_varyings = 16;
 
-   case PIPE_CAPF_MAX_LINE_WIDTH:
-   case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-   case PIPE_CAPF_MAX_POINT_SIZE:
-   case PIPE_CAPF_MAX_POINT_SIZE_AA:
-      return 8192.0f; /* no clue */
 
-   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
-   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
-      return 1.0 / 16; /* not a real limit, HW uses floats... but helps caching CSOs */
+   caps->min_line_width = caps->min_line_width_aa = 1.0f; /* no clue */
+   caps->min_point_size = caps->min_point_size_aa = 1.0f; /* no clue */
 
-   case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
-      return 0.0f;
+   caps->max_line_width = caps->max_line_width_aa = 8192.0f; /* no clue */
+   caps->max_point_size = caps->max_point_size_aa = 8192.0f; /* no clue */
 
-   case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
-      return 16.0f;
+   caps->line_width_granularity =
+   caps->point_size_granularity = 1.0 / 16; /* not a real limit, HW uses floats... but helps caching CSOs */
 
-   case PIPE_CAPF_MIN_CONSERVATIVE_RASTER_DILATE:
-   case PIPE_CAPF_MAX_CONSERVATIVE_RASTER_DILATE:
-   case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
-      return 0.0f;
+   caps->max_texture_anisotropy = 0.0f;
 
-   default:
-      fprintf(stdout, "%s: unsupported parameter: %d\n", __func__, param);
-      return 0.0f;
-   }
+   caps->max_texture_lod_bias = 16.0f;
+
+   caps->min_conservative_raster_dilate =
+   caps->max_conservative_raster_dilate =
+   caps->conservative_raster_dilate_granularity = 0.0f;
 }
 
 static int
@@ -226,8 +180,6 @@ grate_screen_get_shader_param(struct pipe_screen *pscreen,
          return 64 * 4; /* 64 vec4s */
 
       /* cannot index attributes, varyings nor GPRs */
-      case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
-      case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
          return 0;
 
@@ -299,8 +251,6 @@ grate_screen_get_shader_param(struct pipe_screen *pscreen,
          return 16; /* scalars */
 
       /* no indirection */
-      case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
-      case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
          return 0;
@@ -485,8 +435,6 @@ grate_screen_create(int fd)
    screen->base.get_vendor = grate_screen_get_vendor;
    screen->base.get_device_vendor = grate_screen_get_device_vendor;
    screen->base.get_screen_fd = grate_screen_get_screen_fd;
-   screen->base.get_param = grate_screen_get_param;
-   screen->base.get_paramf = grate_screen_get_paramf;
    screen->base.get_shader_param = grate_screen_get_shader_param;
    screen->base.context_create = grate_screen_context_create;
    screen->base.is_format_supported = grate_screen_is_format_supported;
@@ -498,6 +446,8 @@ grate_screen_create(int fd)
    screen->base.fence_finish = grate_screen_fence_finish;
 
    grate_screen_resource_init(&screen->base);
+
+   grate_screen_init_caps(screen);
 
    return &screen->base;
 }
