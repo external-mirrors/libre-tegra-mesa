@@ -1,3 +1,4 @@
+#include "grate_common.h"
 #include "grate_compiler.h"
 #include "fpir.h"
 
@@ -158,7 +159,7 @@ emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *
       break;
 
    default:
-      unreachable("unsupported TGSI-opcode!");
+      printf("GRATE FRAG TGSI UNIMPLEMENTED: 0x%02x\n", inst->Instruction.Opcode);
    }
 }
 
