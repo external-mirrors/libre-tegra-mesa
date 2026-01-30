@@ -3,6 +3,8 @@ set -e
 
 cd "$(dirname "$0")"
 
+source ./my_common.sh
+
 # vblank_mode=0 disables vsync. Shows max FPS instead of 60
 
 export vblank_mode=0

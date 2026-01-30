@@ -5,6 +5,8 @@ cd "$(dirname "$0")"
 
 source ./my_common.sh
 
+rm -r build
+
 # gnu2 tlsdesc is broken in binutils
 export CFLAGS="$CFLAGS -mtls-dialect=gnu"
 export CXXFLAGS="$CXXFLAGS -mtls-dialect=gnu"
