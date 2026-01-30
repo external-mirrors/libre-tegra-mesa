@@ -439,7 +439,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
          if (fill(context->gr2d, grate_resource(dst->texture),
                   pack_color(dst->format, color->f),
                   util_format_get_blocksize(dst->format),
-                  0, 0, dst->width, dst->height) < 0)
+                  0, 0, fb->width, fb->height) < 0)
             return;
       }
    }
@@ -450,7 +450,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
          if (fill(context->gr2d, grate_resource(fb->zsbuf->texture),
                   util_pack_z_stencil(fb->zsbuf->format, depth, stencil),
                   util_format_get_blocksize(fb->zsbuf->format),
-                  0, 0, fb->zsbuf->width, fb->zsbuf->height) < 0)
+                  0, 0, fb->width, fb->height) < 0)
             return;
       }
    }
