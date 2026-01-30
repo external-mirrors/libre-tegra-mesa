@@ -20,8 +20,6 @@ grate_create_surface(struct pipe_context *context,
 
    surface->base.context = context;
    surface->base.format = template->format;
-   surface->base.width = u_minify(resource->width0, level);
-   surface->base.height = u_minify(resource->height0, level);
    surface->base.u.tex.level = level;
    surface->base.u.tex.first_layer = template->u.tex.first_layer;
    surface->base.u.tex.last_layer = template->u.tex.last_layer;

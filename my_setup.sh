@@ -27,6 +27,7 @@ meson setup \
 	-Dlibunwind=disabled \
 	-Dllvm=disabled \
 	-Degl-native-platform=drm \
+	-Dlegacy-x11=dri2 \
 	-Dprefix="${INSTALL_DIR}" \
 	${EXTRA_ARGS} \
 	${@} \
