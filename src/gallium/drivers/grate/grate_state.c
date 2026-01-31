@@ -414,7 +414,7 @@ grate_create_zsa_state(struct pipe_context *pcontext,
    depth_test |= TGR3D_QR_Z_TEST_Z_FUNC(grate_compare_func(template->depth_func));
    depth_test |= TGR3D_QR_Z_TEST_Z_ENABLE(template->depth_enabled);
    depth_test |= TGR3D_QR_Z_TEST_QRAST_FB_WRITE(template->depth_writemask);
-   depth_test |= 0x200;
+   depth_test |= TGR3D_QR_Z_TEST_Z_CLAMP(TGR3D_Z_CLAMP_KILL);
 
    so->commands[0] = host1x_opcode_incr(REG_TGR3D_QR_Z_TEST, 1);
    so->commands[1] = depth_test;
@@ -587,7 +587,7 @@ emit_render_targets(struct grate_context *context)
    for (i = 0; i < fb->num_rts; ++i) {
       uint32_t rt_params = fb->rt_params[i];
       /* TODO: setup dither */
-      /* rt_params |= TGR3D_BOOL(RT_PARAMS, DITHER_ENABLE, enable_dither); */
+      /* rt_params |= TGR3D_GLOBAL_SURFDESC_DITHER(enable_dither); */
       grate_stream_push(stream, rt_params);
    }
 
@@ -595,7 +595,9 @@ emit_render_targets(struct grate_context *context)
    for (i = 0; i < fb->num_rts; ++i)
       grate_stream_push_reloc(stream, fb->bos[i], 0);
 
-   grate_stream_push(stream, host1x_opcode_incr(REG_TGR3D_DW_ST_ENABLE, 1));
+   // surf 0 on, 1-15 off
+   grate_stream_push(stream, host1x_opcode_incr(REG_TGR3D_DW_ST_ENABLE,
+                                                TGR3D_DW_ST_ENABLE_SURFACE_0_ST_ENABLE(TGR3D_STATE_ENABLED)));
    grate_stream_push(stream, fb->mask);
 }
 
@@ -665,8 +667,8 @@ emit_program(struct grate_context *context)
 
    cull_face_linker_setup = TGR3D_SU_PARAM_SUBPIX_XOFF(0x38) |
                             TGR3D_SU_PARAM_SUBPIX_YOFF(0x38) |
-                            TGR3D_SU_PARAM_TRANSPOSE_XY(false) |
-                            TGR3D_SU_PARAM_CLIP_ENABLE(true);
+                            TGR3D_SU_PARAM_TRANSPOSE_XY(TGR3D_STATE_DISABLED) |
+                            TGR3D_SU_PARAM_CLIP_ENABLE(TGR3D_STATE_ENABLED);
 
    /* depends on cull-face */
    cull_face_linker_setup |= context->rast->cull_face[context->y_invert];

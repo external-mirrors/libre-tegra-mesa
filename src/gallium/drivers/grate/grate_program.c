@@ -258,8 +258,7 @@ grate_create_fs_state(struct pipe_context *pcontext,
    }
 
    int num_alu_instrs = list_length(&fp.alu_instructions);
-   PUSH(host1x_opcode_nonincr(REG_TGR3D_ALU_INST_DATA,
-        num_alu_instrs * 4 * 2));
+   PUSH(host1x_opcode_nonincr(REG_TGR3D_ALU_INST_DATA, num_alu_instrs * 4 * 2));
    list_for_each_entry(struct fp_alu_instr_packet, instr, &fp.alu_instructions, link) {
       for (int i = 0; i < 4; ++i) {
          uint32_t words[2];
