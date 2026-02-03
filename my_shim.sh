@@ -7,18 +7,19 @@ source ./my_common.sh
 
 if [[ -z "${SHUT_DEBUG}" ]]; then
 	export vblank_mode=0
-	export GRATE_DEBUG=unimplemented,tgsi,trace
-	export LIBGL_DEBUG=verbose
+	#export GRATE_DEBUG=unimplemented,tgsi,trace
+	export GRATE_TGSI_COMPILER=0
+	#export LIBGL_DEBUG=verbose
 	export MESA_DEBUG=flush,incomplete_tex,incomplete_fbo,context
 	export MESA_LOG_LEVEL=debug
 	export GALLIUM_TRACE=/tmp/trace-gallium.xml
 	export GALLIUM_TRACE_TC=true
-	export EGL_LOG_LEVEL=debug
+	#export EGL_LOG_LEVEL=debug
 	export EGL_PLATFORM=surfaceless
-	export LIBDRM_TEGRA_DEBUG_BO=1
-	export DRI_PRIME_DEBUG=1
-	export DRM_SHIM_DEBUG=1
-	export NIR_DEBUG=tgsi,print
+	#export LIBDRM_TEGRA_DEBUG_BO=1
+	#export DRI_PRIME_DEBUG=1
+	#export DRM_SHIM_DEBUG=1
+	#export NIR_DEBUG=tgsi,print
 fi
 
 export GRATE_SOC=T30
@@ -27,7 +28,7 @@ LIB_DIR="$(meson introspect --buildoptions build | jq -r '.[] | select(.name=="l
 LIB_PATH="${INSTALL_DIR}/${LIB_DIR}"
 
 if [[ -z "${1}" ]]; then
-	set eglgears_wayland -info
+	set eglgears_wayland
 fi
 
 if [[ ! -d "${LIB_PATH}" ]]; then
