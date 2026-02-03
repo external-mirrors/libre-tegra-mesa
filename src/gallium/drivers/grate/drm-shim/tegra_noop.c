@@ -59,6 +59,7 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_TEGRA_GEM_GET_TILING] = tegra_ioctl_noop,
    [DRM_TEGRA_GEM_SET_FLAGS] = tegra_ioctl_noop,
    [DRM_TEGRA_GEM_GET_FLAGS] = tegra_ioctl_noop,
+   [14] = tegra_ioctl_noop, // hack to silence warnings
 };
 
 void
