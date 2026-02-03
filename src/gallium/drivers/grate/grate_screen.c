@@ -308,7 +308,7 @@ grate_screen_init_shader_caps(struct grate_screen *screen)
    caps->max_shader_images = 0;
    caps->max_hw_atomic_counters = 0;
    caps->max_hw_atomic_counter_buffers = 0;
-   caps->supported_irs = (1 << PIPE_SHADER_IR_TGSI) | (1 << PIPE_SHADER_IR_NIR);
+   caps->supported_irs = (1 << PIPE_SHADER_IR_NIR);
 
    // Bool values
    caps->cont_supported = false;

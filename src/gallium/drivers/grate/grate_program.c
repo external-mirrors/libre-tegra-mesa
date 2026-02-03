@@ -90,35 +90,43 @@ grate_create_vs_state(struct pipe_context *pcontext,
    struct grate_vertex_shader_state *so =
       CALLOC_STRUCT(grate_vertex_shader_state);
 
+   struct grate_vp_shader vp;
+
    if (!so)
       return NULL;
 
    so->base = *template;
 
-   if (template->type == PIPE_SHADER_IR_NIR) {
-      so->base.tokens = nir_to_tgsi(template->ir.nir,
-                                    pcontext->screen);
-      so->base.type = PIPE_SHADER_IR_TGSI;
+   char *str;
+   str = getenv("GRATE_TGSI_COMPILER");
+   if (str && strcmp(str, "1") == 0) { // TGSI path
+      printf("tgsi path\n");
+      if (template->type == PIPE_SHADER_IR_NIR) {
+         so->base.tokens = nir_to_tgsi(template->ir.nir,
+                                       pcontext->screen);
+         so->base.type = PIPE_SHADER_IR_TGSI;
+      }
+
+      if (grate_debug & GRATE_DEBUG_TGSI) {
+         fprintf(stderr, "DEBUG: TGSI:\n");
+         tgsi_dump(so->base.tokens, 0);
+         fprintf(stderr, "\n");
+      }
+
+      struct tgsi_token *new_tokens = grate_vs_tgsi_transform(so->base.tokens);
+      if (!new_tokens)
+         return NULL;
+
+      struct tgsi_parse_context parser;
+      unsigned ok = tgsi_parse_init(&parser, new_tokens);
+      assert(ok == TGSI_PARSE_OK);
+
+      grate_tgsi_to_vp(&vp, &parser);
+   } else { // NIR path
+      printf("NIR path\n");
+      assert(template->type == PIPE_SHADER_IR_NIR);
+
    }
-
-
-   if (grate_debug & GRATE_DEBUG_TGSI) {
-      fprintf(stderr, "DEBUG: TGSI:\n");
-      tgsi_dump(so->base.tokens, 0);
-      fprintf(stderr, "\n");
-   }
-
-   struct tgsi_token *new_tokens = grate_vs_tgsi_transform(so->base.tokens);
-   if (!new_tokens)
-      return NULL;
-
-   struct tgsi_parse_context parser;
-   unsigned ok = tgsi_parse_init(&parser, new_tokens);
-   assert(ok == TGSI_PARSE_OK);
-
-   struct grate_vp_shader vp;
-   grate_tgsi_to_vp(&vp, &parser);
-
    int num_instructions = list_length(&vp.instructions);
    assert(num_instructions < 256);
    int num_commands = 2 + num_instructions * 4;
