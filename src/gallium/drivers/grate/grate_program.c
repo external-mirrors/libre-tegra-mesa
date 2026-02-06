@@ -125,7 +125,6 @@ grate_create_vs_state(struct pipe_context *pcontext,
    } else { // NIR path
       printf("NIR path\n");
       assert(template->type == PIPE_SHADER_IR_NIR);
-
    }
    int num_instructions = list_length(&vp.instructions);
    assert(num_instructions < 256);
