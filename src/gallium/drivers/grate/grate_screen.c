@@ -430,7 +430,7 @@ grate_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
    }
 }
 
-static const nir_shader_compiler_options grate_base_compiler_options = {
+static const nir_shader_compiler_options grate_vs_compiler_options = {
    /*
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
@@ -452,6 +452,10 @@ static const nir_shader_compiler_options grate_base_compiler_options = {
    .force_indirect_unrolling_sampler = true,
    .max_unroll_iterations = 32,
    */
+   .no_integers = true,
+};
+
+static const nir_shader_compiler_options grate_fs_compiler_options = {
    .no_integers = true,
 };
 
@@ -515,8 +519,8 @@ grate_screen_create(int fd)
    screen->base.query_dmabuf_modifiers = grate_screen_query_dmabuf_modifiers;
    screen->base.is_dmabuf_modifier_supported = grate_screen_is_dmabuf_modifier_supported;
    
-   screen->base.nir_options[MESA_SHADER_VERTEX] = &grate_base_compiler_options;
-   screen->base.nir_options[MESA_SHADER_FRAGMENT] = &grate_base_compiler_options;
+   screen->base.nir_options[MESA_SHADER_VERTEX] = &grate_vs_compiler_options;
+   screen->base.nir_options[MESA_SHADER_FRAGMENT] = &grate_fs_compiler_options;
 
    /* fence functions */
    screen->base.fence_reference = grate_screen_fence_reference;
