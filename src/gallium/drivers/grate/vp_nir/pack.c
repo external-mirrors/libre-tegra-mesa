@@ -3,7 +3,7 @@
 
 #include "util/macros.h"
 
-#include "vpir.h"
+#include "vp_ir.h"
 
 static unsigned
 vp_write_mask(unsigned input)

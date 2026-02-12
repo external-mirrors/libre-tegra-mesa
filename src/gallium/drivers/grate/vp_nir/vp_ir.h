@@ -1,10 +1,14 @@
-#ifndef VPIR_H
-#define VPIR_H
+#ifndef VP_IR_H
+#define VP_IR_H
 
+
+#include "grate_compiler.h"
 #include "util/list.h"
 
 #include "stdbool.h"
 #include "stdint.h"
+
+
 
 enum vp_src_file {
    VP_SRC_FILE_UNDEF = 0,
@@ -80,6 +84,8 @@ enum vp_scalar_op {
 struct vp_dst_operand {
    enum vp_dst_file file;
    int index;
+   int virt_id;
+   int hw_id;
    unsigned int write_mask;
    bool saturate;
 };
@@ -87,6 +93,8 @@ struct vp_dst_operand {
 struct vp_src_operand {
    enum vp_src_file file;
    int index;
+   int virt_id;
+   int hw_id;
    enum vp_swz swizzle[4];
    bool negate, absolute;
 };
@@ -109,7 +117,49 @@ struct vp_instr {
    struct vp_scalar_instr scalar;
 };
 
+struct vp_vec_instr
+emit_vNOP(void);
+
+
 void
 grate_vp_pack(uint32_t *dst, struct vp_instr *instr, bool end_of_program);
+
+struct vp_instr *
+emit_packed(struct vp_vec_instr vec, struct vp_scalar_instr scalar);
+
+struct vp_vec_instr
+emit_vADD(struct vp_dst_operand dst, struct vp_src_operand src0,
+          struct vp_src_operand src2);
+
+
+struct vp_vec_instr
+emit_vec_unop(enum vp_vec_op op, struct vp_dst_operand dst,
+              struct vp_src_operand src);
+
+struct vp_vec_instr
+emit_vec_binop(enum vp_vec_op op, struct vp_dst_operand dst,
+              struct vp_src_operand src0, struct vp_src_operand src1);
+
+
+
+struct vp_vec_instr
+emit_vMOV(struct vp_dst_operand dst, struct vp_src_operand src);
+
+
+struct vp_vec_instr
+emit_vMAD(struct vp_dst_operand dst, struct vp_src_operand src0,
+          struct vp_src_operand src1, struct vp_src_operand src2);
+
+
+struct vp_scalar_instr
+emit_sNOP(void);
+
+struct vp_dst_operand
+emit_output(struct grate_vp_shader *vp, int index,
+            unsigned int write_mask, bool saturate);
+
+struct vp_src_operand
+src_temp(int index, const enum vp_swz swizzle[4], bool negate, bool absolute);
+
 
 #endif
