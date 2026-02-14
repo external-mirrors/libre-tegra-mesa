@@ -9,6 +9,35 @@
 #include "stdint.h"
 
 
+// Stupid copy; share via header
+enum reg_class {
+   REG_CLASS_VIRT_SCALAR,
+   REG_CLASS_VIRT_VEC2,
+   REG_CLASS_VIRT_VEC3,
+   REG_CLASS_VEC4,
+   NUM_REG_CLASSES,
+};
+
+enum reg_type {
+   REG_TYPE_VEC4,
+   REG_TYPE_VIRT_VEC3_XYZ,
+   REG_TYPE_VIRT_VEC3_XYW,
+   REG_TYPE_VIRT_VEC3_XZW,
+   REG_TYPE_VIRT_VEC3_YZW,
+   REG_TYPE_VIRT_VEC2_XY,
+   REG_TYPE_VIRT_VEC2_XZ,
+   REG_TYPE_VIRT_VEC2_XW,
+   REG_TYPE_VIRT_VEC2_YZ,
+   REG_TYPE_VIRT_VEC2_YW,
+   REG_TYPE_VIRT_VEC2_ZW,
+   REG_TYPE_VIRT_SCALAR_X,
+   REG_TYPE_VIRT_SCALAR_Y,
+   REG_TYPE_VIRT_SCALAR_Z,
+   REG_TYPE_VIRT_SCALAR_W,
+   NUM_REG_TYPES,
+};
+
+
 
 enum vp_src_file {
    VP_SRC_FILE_UNDEF = 0,
@@ -87,6 +116,8 @@ struct vp_dst_operand {
    int virt_id;
    int hw_id;
    unsigned int write_mask;
+   enum reg_class reg_class;
+   enum reg_type reg_type;
    bool saturate;
 };
 
@@ -96,7 +127,10 @@ struct vp_src_operand {
    int virt_id;
    int hw_id;
    enum vp_swz swizzle[4];
+   enum reg_class reg_class;
+   enum reg_type reg_type;
    bool negate, absolute;
+
 };
 
 struct vp_vec_instr {
@@ -120,6 +154,8 @@ struct vp_instr {
 struct vp_vec_instr
 emit_vNOP(void);
 
+void
+grate_dump_ir(struct grate_vp_shader *vp);
 
 void
 grate_vp_pack(uint32_t *dst, struct vp_instr *instr, bool end_of_program);
@@ -159,7 +195,8 @@ emit_output(struct grate_vp_shader *vp, int index,
             unsigned int write_mask, bool saturate);
 
 struct vp_src_operand
-src_temp(int index, const enum vp_swz swizzle[4], bool negate, bool absolute);
+src_temp(int index, const enum vp_swz swizzle[4]);
 
-
+struct vp_dst_operand
+dst_temp(int index, enum reg_class reg_class);
 #endif

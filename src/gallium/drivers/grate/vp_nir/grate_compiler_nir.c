@@ -28,8 +28,16 @@ emit_load_input(struct tegra_fp_shader *fp, nir_intrinsic_instr *intr)
    assert(intr->dest.is_ssa);
    init_ssa_def(fp, &intr->dest.ssa, node);
 }
-#endif
+
 static void
+emit_load_const(struct tegra_fp_shader *fp, nir_load_const_instr *instr)
+{
+   printf("emit_load_const: not implemented\n");
+   assert(instr->def.num_components == 1);
+}
+#endif
+
+static struct vp_instr *
 emit_store_output(struct grate_vp_shader *vp, nir_intrinsic_instr *intr)
 {
    assert(nir_intrinsic_infos[intr->intrinsic].num_srcs == 2);
@@ -60,16 +68,17 @@ emit_store_output(struct grate_vp_shader *vp, nir_intrinsic_instr *intr)
       src->SwizzleW */
    };
 
-   emit_packed(emit_vMOV(emit_output(vp, idx, 0, false),
-                        src_temp(idx, swizzle, false, false)),
-                         emit_sNOP());
-
    printf("emit_store_output: idx: %d\n", idx);
+
+   return emit_packed(emit_vMOV(emit_output(vp, idx, 0, false),
+                        src_temp(idx, swizzle)),
+                         emit_sNOP());
 }
 
 static void
 emit_intrinsic(struct grate_vp_shader *vp, nir_intrinsic_instr *intr)
 {
+   struct vp_instr * vp_instr = NULL;
    switch (intr->intrinsic) {
    /*
       case nir_intrinsic_load_input:
@@ -77,93 +86,28 @@ emit_intrinsic(struct grate_vp_shader *vp, nir_intrinsic_instr *intr)
       break;
    */
    case nir_intrinsic_store_output:
-      emit_store_output(vp, intr);
+      vp_instr = emit_store_output(vp, intr);
       break;
 
    default:
       printf("emit_intrinsic: not implemented (%s)\n",
              nir_intrinsic_infos[intr->intrinsic].name);
    }
+
+   if (vp_instr != NULL)
+      list_addtail(&vp_instr->link, &vp->instructions);
+
 }
 
-#if 0
-static void
-emit_load_const(struct tegra_fp_shader *fp, nir_load_const_instr *instr)
-{
-   printf("emit_load_const: not implemented\n");
-   assert(instr->def.num_components == 1);
-}
-#endif
 
 
 
-
-#if 0
-static struct vp_src_operand
-src_temp(int virt_id, const enum vp_swz swizzle[4], bool negate, bool absolute)
-{
-   struct vp_src_operand ret = {
-      .file = VP_SRC_FILE_TEMP,
-      .virt_id = virt_id,
-      .negate = negate,
-      .absolute = absolute
-   };
-   memcpy(ret.swizzle, swizzle, sizeof(ret.swizzle));
-   return ret;
-}
-
-static struct vp_src_operand
-nir_src_to_vp(struct grate_vp_shader *vp, const struct nir_alu_src *src)
-{
-   enum vp_swz swizzle[4] = {
-      src->SwizzleX,
-      src->SwizzleY,
-      src->SwizzleZ,
-      src->SwizzleW
-   };
-   bool negate = src->Negate != 0;
-   bool absolute = src->Absolute != 0;
-
-   switch (src->File) {
-   case TGSI_FILE_INPUT:
-      return attrib(src->Index, swizzle, negate, absolute);
-
-   case TGSI_FILE_CONSTANT:
-      return uniform(src->Index, swizzle, negate, absolute);
-
-   case TGSI_FILE_TEMPORARY:
-      return src_temp(src->Index, swizzle, negate, absolute);
-
-   case TGSI_FILE_IMMEDIATE:
-      /* HACK: allocate uniforms from the top for immediates; need to actually record these */
-      return uniform(1023 - src->Index, swizzle, negate, absolute);
-
-   default:
-      UNREACHABLE("unsupported input!");
-   }
-}
-
-static struct vp_dst_operand
-nir_dst_to_vp(struct grate_vp_shader *vp, const struct nir_def *dst, bool saturate)
-{
-   switch (dst->File) {
-   case TGSI_FILE_OUTPUT:
-      return emit_output(vp, dst->Index, dst->WriteMask, saturate);
-
-   case TGSI_FILE_TEMPORARY:
-      return dst_temp(dst->Index, dst->WriteMask, saturate);
-
-   default:
-      UNREACHABLE("unsupported output");
-   }
-}
 
 static void
 emit_alu(struct grate_vp_shader *vp, nir_alu_instr *alu)
 {
    printf("%s\n", __FUNCTION__);
-
-   struct vp_instr *vp_instr;
+   struct vp_instr *vp_instr = NULL;
 
    const nir_op_info *info = &nir_op_infos[alu->op];
 
@@ -171,38 +115,52 @@ emit_alu(struct grate_vp_shader *vp, nir_alu_instr *alu)
    nir_print_instr(instr, stdout);
    printf("\n");
 
+   // Gather Output Data
+   int dst_index = alu->def.index;
+   enum reg_class dst_reg_class = alu->def.num_components - 1;
+
+   // Gather Input Data
+   int src_index[3];
+   enum vp_swz src_swizzle[3][4];
+   for (int i = 0; i < info->num_inputs; i++) {
+      src_index[i] = alu->src[i].src.ssa->index;
+
+      src_swizzle[i][0] = alu->src[i].swizzle[0];
+      src_swizzle[i][1] = alu->src[i].swizzle[1];
+      src_swizzle[i][2] = alu->src[i].swizzle[2];
+      src_swizzle[i][3] = alu->src[i].swizzle[3];
+   }
 
    switch (alu->op) {
    case nir_op_mov:
       break;
+
    case nir_op_fadd:
-      vp_instr = emit_packed(emit_vADD(nir_dst_to_vp(vp, &inst->Dst[0].Register, saturate),
-                                   nir_src_to_vp(vp, &inst->Src[0].Register),
-                                   nir_src_to_vp(vp, &inst->Src[1].Register)),
-                         emit_sNOP());
-
-      for (int i = 0; i < info->num_inputs; i++) {
-         unsigned idx = alu->src[i].src.ssa->index;
-         printf("idx: %u\n", idx);
-      }
-
-
+      vp_instr = emit_packed(emit_vADD(dst_temp(dst_index, dst_reg_class),
+                                      src_temp(src_index[0], src_swizzle[0]),
+                                      src_temp(src_index[1], src_swizzle[1])),
+                              emit_sNOP());
       break;
+
    case nir_op_fmul:
       //nir_print_instr(alu, stderr);
       break;
+
    case nir_op_iadd:
       break;
+
    default:
       printf("emit_alu: not implemented (%s)\n", info->name);
       break;
    }
 
-   list_addtail(&vp_instr->link, &vp->instructions);
+   if (vp_instr != NULL)
+      list_addtail(&vp_instr->link, &vp->instructions);
+
    printf("-------------------------------------------\n");
 }
 
-#endif
+
 
 static void
 emit_block(struct grate_vp_shader *vp, struct nir_block *block)
@@ -211,7 +169,7 @@ emit_block(struct grate_vp_shader *vp, struct nir_block *block)
    nir_foreach_instr(instr, block) {
       switch (instr->type) {
       case nir_instr_type_alu:
-         //emit_alu(vp, nir_instr_as_alu(instr));
+         emit_alu(vp, nir_instr_as_alu(instr));
          break;
       #if 0
       case nir_instr_type_deref:
@@ -330,6 +288,10 @@ void nir_main(struct pipe_context *pcontext, const struct pipe_shader_state *tem
 
 
    emit_function(vp, entry);
+
+
+   grate_dump_ir(vp);
+
    c->regs = grate_ra_setup(c);
    if (!c->regs) {
       ralloc_free((void *)c);

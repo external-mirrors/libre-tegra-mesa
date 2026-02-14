@@ -42,13 +42,13 @@ uniform(int index, const enum vp_swz swizzle[4], bool negate, bool absolute)
 }
 
 struct vp_src_operand
-src_temp(int index, const enum vp_swz swizzle[4], bool negate, bool absolute)
+src_temp(int index, const enum vp_swz swizzle[4])
 {
    struct vp_src_operand ret = {
       .file = VP_SRC_FILE_TEMP,
-      .index = index,
-      .negate = negate,
-      .absolute = absolute
+      .virt_id = index,
+      .negate = false,
+      .absolute = false
    };
    memcpy(ret.swizzle, swizzle, sizeof(ret.swizzle));
    return ret;
@@ -80,14 +80,15 @@ emit_output(struct grate_vp_shader *vp, int index,
    return ret;
 }
 
-static struct vp_dst_operand
-dst_temp(int index, unsigned int write_mask, bool saturate)
+struct vp_dst_operand
+dst_temp(int index, enum reg_class reg_class)
 {
    struct vp_dst_operand ret = {
       .file = VP_DST_FILE_TEMP,
-      .index = index,
-      .write_mask = write_mask,
-      .saturate = saturate
+      .virt_id = index,
+      .write_mask = 0,
+      .saturate = false,
+      .reg_class = reg_class
    };
    return ret;
 }
