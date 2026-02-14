@@ -198,5 +198,25 @@ struct vp_src_operand
 src_temp(int index, const enum vp_swz swizzle[4]);
 
 struct vp_dst_operand
-dst_temp(int index, enum reg_class reg_class);
+dst_temp(int index, enum reg_class reg_class, bool sat);
+
+
+#define GENSIG_V_BINOP(OP) \
+struct vp_vec_instr \
+emit_v ## OP (struct vp_dst_operand dst, struct vp_src_operand src0, \
+          struct vp_src_operand src1)
+
+GENSIG_V_BINOP(MUL);
+GENSIG_V_BINOP(DP3);
+GENSIG_V_BINOP(DP4);
+GENSIG_V_BINOP(SLT);
+GENSIG_V_BINOP(MAX);
+
+
+
+#define GENSIG_S_UNOP(OP) \
+struct vp_scalar_instr \
+emit_s ## OP (struct vp_dst_operand dst, struct vp_src_operand src)
+
+GENSIG_S_UNOP(RSQ);
 #endif

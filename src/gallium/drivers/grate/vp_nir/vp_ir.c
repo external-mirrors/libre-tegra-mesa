@@ -74,6 +74,7 @@ emit_output(struct grate_vp_shader *vp, int index,
    struct vp_dst_operand ret = {
       .file = VP_DST_FILE_OUTPUT,
       .index = index,
+      .virt_id = index,
       .write_mask = write_mask,
       .saturate = saturate
    };
@@ -81,13 +82,13 @@ emit_output(struct grate_vp_shader *vp, int index,
 }
 
 struct vp_dst_operand
-dst_temp(int index, enum reg_class reg_class)
+dst_temp(int index, enum reg_class reg_class, bool sat)
 {
    struct vp_dst_operand ret = {
       .file = VP_DST_FILE_TEMP,
       .virt_id = index,
       .write_mask = 0,
-      .saturate = false,
+      .saturate = sat,
       .reg_class = reg_class
    };
    return ret;
@@ -141,13 +142,13 @@ emit_vADD(struct vp_dst_operand dst, struct vp_src_operand src0,
    struct vp_vec_instr ret = {
       .op = VP_VEC_OP_ADD,
       .dst = dst,
-      .src = { src0, src_undef(), src2 } // add is "strange" in that it takes src0 and src2
+      .src = { src0, src_undef(), src2 }, // add is "strange" in that it takes src0 and src2
    };
    return ret;
 }
 
 #define GEN_V_BINOP(OP) \
-static struct vp_vec_instr \
+struct vp_vec_instr \
 emit_v ## OP (struct vp_dst_operand dst, struct vp_src_operand src0, \
           struct vp_src_operand src1) \
 { \
@@ -184,7 +185,7 @@ emit_sNOP(void)
 }
 
 #define GEN_S_UNOP(OP) \
-static struct vp_scalar_instr \
+struct vp_scalar_instr \
 emit_s ## OP (struct vp_dst_operand dst, struct vp_src_operand src) \
 { \
    struct vp_scalar_instr ret = { \
