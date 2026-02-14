@@ -107,11 +107,54 @@ static char *print_v_op(char* tmp, struct vp_vec_instr *vec) {
 	);
 	tmp += n;
 
-	tmp = print_src(tmp, &vec->src[0]);
-	tmp = print(tmp, ", ");
-	tmp = print_src(tmp, &vec->src[1]);
-	tmp = print(tmp, ", ");
-	tmp = print_src(tmp, &vec->src[2]);
+	unsigned int x;
+	switch(vec->op) {
+		case VP_VEC_OP_NOP:
+		case VP_VEC_OP_STR:
+			x= 0;
+			break;
+		case VP_VEC_OP_MOV:
+		case VP_VEC_OP_ARL:
+		case VP_VEC_OP_ARR:
+		case VP_VEC_OP_ARA:
+		case VP_VEC_OP_FRC:
+		case VP_VEC_OP_FLR:
+		case VP_VEC_OP_SSG:
+			x = 1;
+			break;
+		case VP_VEC_OP_MUL:
+		case VP_VEC_OP_DP3:
+		case VP_VEC_OP_DPH:
+		case VP_VEC_OP_DP4:
+		case VP_VEC_OP_DST:
+		case VP_VEC_OP_MIN:
+		case VP_VEC_OP_MAX:
+		case VP_VEC_OP_SLT:
+		case VP_VEC_OP_SGE:
+		case VP_VEC_OP_SEQ:
+		case VP_VEC_OP_SFL:
+		case VP_VEC_OP_SGT:
+		case VP_VEC_OP_SLE:
+		case VP_VEC_OP_SNE:
+		case VP_VEC_OP_TXL:
+			x = 2;
+			break;
+		case VP_VEC_OP_ADD: // exception because of how add instruction is put to ALU
+		case VP_VEC_OP_MAD:
+		// No idea about stack stuff
+		case VP_VEC_OP_PUSHA:
+		case VP_VEC_OP_POPA:
+			x = 3;
+			break;
+	}
+
+	for (int i = 0; i < x; i++) {
+		if (vec->op == VP_VEC_OP_ADD && i == 1)
+			continue;
+
+		tmp = print_src(tmp, &vec->src[i]);
+		tmp = print(tmp, ", ");
+	}
 
 	return tmp;
 }
@@ -121,12 +164,10 @@ static char *print_v_op(char* tmp, struct vp_vec_instr *vec) {
 void
 grate_dump_ir(struct grate_vp_shader *vp) {
 	int num_instructions = list_length(&vp->instructions);
-    printf("Dumping Grate-IR (%d) instructions:\n", num_instructions);
+	printf("Dumping Grate-IR (%d) instructions:\n", num_instructions);
 
 	char str[256];
 	char *tmp = str;
-
-
 
 	assert(vp != NULL);
 	assert(vp->instructions.next != NULL);
