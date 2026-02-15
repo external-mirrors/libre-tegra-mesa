@@ -48,7 +48,8 @@ src_temp(int index, const enum vp_swz swizzle[4])
       .file = VP_SRC_FILE_TEMP,
       .virt_id = index,
       .negate = false,
-      .absolute = false
+      .absolute = false,
+      .hw_id = 99,
    };
    memcpy(ret.swizzle, swizzle, sizeof(ret.swizzle));
    return ret;
@@ -89,7 +90,8 @@ dst_temp(int index, enum reg_class reg_class, bool sat)
       .virt_id = index,
       .write_mask = 0,
       .saturate = sat,
-      .reg_class = reg_class
+      .reg_class = reg_class,
+      .hw_id = 99,
    };
    return ret;
 }

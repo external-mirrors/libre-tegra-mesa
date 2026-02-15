@@ -438,4 +438,6 @@ void nir_main(struct pipe_context *pcontext, const struct pipe_shader_state *tem
       c = NULL;
    }
 
+
+   grate_ra_assign(c, vp);
 }

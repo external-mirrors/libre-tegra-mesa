@@ -144,3 +144,21 @@ grate_ra_setup(void *mem_ctx)
 
    return regs;
 }
+
+static void grate_liveness(struct grate_vp_shader *vp) {
+
+}
+
+void grate_ra_assign(struct grate_compiler *c, struct grate_vp_shader *vp) {
+   struct ra_regs *regs = c->regs;
+
+   // number instructions
+
+
+
+   int num_nodes = list_length(&vp->instructions); // works for now because Vec and Scalar instructions are not merged yet. Later we need to count actual used outputs
+
+   struct ra_graph *g = ra_alloc_interference_graph(regs, num_nodes);
+
+
+}

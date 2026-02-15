@@ -16,6 +16,8 @@ struct grate_compiler {
 
 struct ra_regs *grate_ra_setup(void *mem_ctx);
 
+void grate_ra_assign(struct grate_compiler *c, struct grate_vp_shader *vp);
+
 void nir_main(struct pipe_context *pcontext, const struct pipe_shader_state *template, struct grate_vp_shader *vp);
 
 #endif
