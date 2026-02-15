@@ -154,8 +154,12 @@ struct vp_instr {
 struct vp_vec_instr
 emit_vNOP(void);
 
-void
-grate_dump_ir(struct grate_vp_shader *vp);
+
+void grate_dump_ir_virt(struct grate_vp_shader *vp);
+
+void grate_dump_ir_hw(struct grate_vp_shader *vp);
+
+void grate_dump_ir_all(struct grate_vp_shader *vp);
 
 void
 grate_vp_pack(uint32_t *dst, struct vp_instr *instr, bool end_of_program);

@@ -428,7 +428,9 @@ void nir_main(struct pipe_context *pcontext, const struct pipe_shader_state *tem
    emit_function(vp, entry);
 
 
-   grate_dump_ir(vp);
+   grate_dump_ir_virt(vp);
+
+   grate_dump_ir_hw(vp);
 
    c->regs = grate_ra_setup(c);
    if (!c->regs) {

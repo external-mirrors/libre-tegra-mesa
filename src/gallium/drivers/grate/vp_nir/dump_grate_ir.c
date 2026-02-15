@@ -60,11 +60,17 @@ static const char vp_swz[] = {
    [VP_SWZ_W] = 'w'
 };
 
+enum print_mode {
+	VIRT,
+	HW
+};
 
-static char *print_dest(char* buf, struct vp_dst_operand *dst) {
+static char *print_dest(char* buf, struct vp_dst_operand *dst, enum print_mode mode) {
 	int n = sprintf(buf, "%s%d.%s",
-		(dst->file == VP_DST_FILE_TEMP) ? "r" : (dst->file == VP_DST_FILE_OUTPUT) ? "o" : "?",
-		dst->virt_id,
+
+		(dst->file == VP_DST_FILE_OUTPUT) ? "o" : (dst->file == VP_DST_FILE_TEMP) ? ((mode == HW) ? "r" : "%") : "?",
+
+		(mode == HW) ? dst->hw_id : dst->virt_id,
 		(dst->reg_class == REG_CLASS_VIRT_SCALAR) ? "vec1" :
 		(dst->reg_class == REG_CLASS_VIRT_VEC2) ? "vec2" :
 		(dst->reg_class == REG_CLASS_VIRT_VEC3) ? "vec3" :
@@ -74,11 +80,12 @@ static char *print_dest(char* buf, struct vp_dst_operand *dst) {
 	return buf + n;
 }
 
-static char *print_src(char* buf, struct vp_src_operand *src) {
-	int n = sprintf(buf, "%s%sr%d.%c%c%c%c%s",
+static char *print_src(char* buf, struct vp_src_operand *src, enum print_mode mode) {
+	int n = sprintf(buf, "%s%s%s%d.%c%c%c%c%s",
 		src->absolute ? "|" : "",
 		src->negate ? "-" : "",
-		src->virt_id,
+		(mode == HW) ? "r" : "%",
+		(mode == HW) ? src->hw_id : src->virt_id,
 		vp_swz[src->swizzle[0]],
 		vp_swz[src->swizzle[1]],
 		vp_swz[src->swizzle[2]],
@@ -96,9 +103,9 @@ static char *print(char* buf, const char *str) {
 	return buf + n;
 }
 
-static char *print_v_op(char* tmp, struct vp_vec_instr *vec) {
+static char *print_v_op(char* tmp, struct vp_vec_instr *vec, enum print_mode mode) {
 
-	tmp = print_dest(tmp, &vec->dst);
+	tmp = print_dest(tmp, &vec->dst, mode);
 	tmp = print(tmp, " = ");
 
 	int n = sprintf(tmp, "%s%s ",
@@ -152,17 +159,18 @@ static char *print_v_op(char* tmp, struct vp_vec_instr *vec) {
 		if (vec->op == VP_VEC_OP_ADD && i == 1)
 			continue;
 
-		tmp = print_src(tmp, &vec->src[i]);
+		tmp = print_src(tmp, &vec->src[i], mode);
 		tmp = print(tmp, ", ");
 	}
+
 
 	return tmp;
 }
 
 
 
-void
-grate_dump_ir(struct grate_vp_shader *vp) {
+static void
+grate_dump_ir(struct grate_vp_shader *vp, bool virt, bool hw) {
 	int num_instructions = list_length(&vp->instructions);
 	printf("Dumping Grate-IR (%d) instructions:\n", num_instructions);
 
@@ -173,16 +181,38 @@ grate_dump_ir(struct grate_vp_shader *vp) {
 	assert(vp->instructions.next != NULL);
 
 	list_for_each_entry(struct vp_instr, instr, &vp->instructions, link) {
-			// Loop init
-			memset(str, 0, 256);
-			tmp = str;
+		// Loop init
+		memset(str, 0, 256);
+		tmp = str;
 
-			// Generate Vec Op
-			tmp = print_v_op(tmp, &instr->vec);
+		// Generate Vec Op
+		if (hw) {
+			tmp = print_v_op(tmp, &instr->vec, HW);
 			tmp = print(tmp, "\n");
 			printf("┏ %s", str);
+		}
+		if (virt) {
+			tmp = print_v_op(tmp, &instr->vec, VIRT);
+			tmp = print(tmp, "\n");
+			printf("┏ %s", str);
+		}
 
-			// Generate Scalar Op
-			printf("┗ %s\n", s_ops[instr->scalar.op]);
+		// Generate Scalar Op
+		printf("┗ %s\n", s_ops[instr->scalar.op]);
 	}
+}
+
+void
+grate_dump_ir_virt(struct grate_vp_shader *vp) {
+	grate_dump_ir(vp, true, false);
+}
+
+void
+grate_dump_ir_hw(struct grate_vp_shader *vp) {
+	grate_dump_ir(vp, false, true);
+}
+
+void
+grate_dump_ir_all(struct grate_vp_shader *vp) {
+	grate_dump_ir(vp, true, true);
 }
