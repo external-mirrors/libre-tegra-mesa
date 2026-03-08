@@ -42,7 +42,8 @@ enum grate_stream_status {
 
 struct grate_command_buffer {
    struct drm_tegra_pushbuf *pushbuf;
-};
+   uint32_t *ptr;
+}; 
 
 struct grate_stream {
    enum grate_stream_status status;

@@ -216,22 +216,7 @@ static struct drm_tegra_bo *find_in_bucket(struct drm_tegra_bo_bucket *bucket,
 void drm_tegra_reset_bo(struct drm_tegra_bo *bo, uint32_t flags,
 			bool set_flags)
 {
-	struct drm_tegra_bo_tiling tiling;
-
 	VG_BO_OBTAIN(bo);
-
-	if (set_flags) {
-		/* XXX: Error handling? */
-		drm_tegra_bo_set_flags(bo, flags);
-	}
-
-	if (bo->custom_tiling) {
-		/* reset tiling mode */
-		memset(&tiling, 0, sizeof(tiling));
-
-		/* XXX: Error handling? */
-		drm_tegra_bo_set_tiling(bo, &tiling);
-	}
 
 	/* reset reference counters */
 	p_atomic_set(&bo->ref, 1);
@@ -246,33 +231,6 @@ void drm_tegra_reset_bo(struct drm_tegra_bo *bo, uint32_t flags,
 		VG_BO_UNMMAP(bo);
 		bo->map = NULL;
 	}
-}
-
-/* NOTE: size is potentially rounded up to bucket size: */
-struct drm_tegra_bo *
-drm_tegra_bo_cache_alloc(struct drm_tegra *drm,
-			 uint32_t *size, uint32_t flags)
-{
-	struct drm_tegra_bo *bo = NULL;
-	struct drm_tegra_bo_bucket *bucket;
-
-	*size = ALIGN_POT(*size, 4096);
-	bucket = drm_tegra_get_bucket(drm, *size);
-
-	/* see if we can be green and recycle: */
-	if (bucket) {
-		*size = bucket->size;
-		bo = find_in_bucket(bucket, flags);
-		if (bo) {
-			drm_tegra_reset_bo(bo, flags, true);
-#ifndef NDEBUG
-			if (drm->debug_bo)
-				drm->debug_bos_cached--;
-#endif
-		}
-	}
-
-	return bo;
 }
 
 int drm_tegra_bo_cache_free(struct drm_tegra_bo *bo)

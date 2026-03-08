@@ -19,16 +19,16 @@
 # SOFTWARE.
 
 files_libgrate = files(
-  'drm/opentegra_drm.h',
   'drm/opentegra_lib.h',
   'drm/private.h',
   'drm/tegra.c',
   'drm/tegra_bo_cache.c',
-  'drm/uapi_v1/channel.c',
-  'drm/uapi_v1/fence.c',
-  'drm/uapi_v1/job.c',
-  'drm/uapi_v1/pushbuf.c',
-  'drm/uapi_v2/job.c',
+  'drm/uapi/channel.c',
+  'drm/uapi/job.c',
+  'drm/uapi/private.h',
+  'drm/uapi/pushbuf.c',
+  'drm/uapi/syncpt.c',
+  'drm/uapi/tegra.c',
   'fp/fpir.h',
   'fp/pack.c',
   'fp/tgsi.c',

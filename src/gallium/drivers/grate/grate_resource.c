@@ -15,7 +15,6 @@
 #include "host1x01_hardware.h"
 #include "tgr_3d.xml.h"
 
-#include "opentegra_drm.h"
 #include "opentegra_lib.h"
 
 /*
@@ -201,7 +200,7 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
 
    size = resource->pitch * height;
 
-   err = drm_tegra_bo_new(&resource->bo, screen->drm, flags, size);
+   err = drm_tegra_bo_new(screen->drm, flags, size, &resource->bo);
    if (err < 0) {
       fprintf(stderr, "drm_tegra_bo_new() failed: %d\n", err);
       return NULL;
@@ -229,10 +228,10 @@ grate_screen_resource_from_handle(struct pipe_screen *pscreen,
    pipe_reference_init(&resource->b.reference, 1);
    resource->b.screen = pscreen;
 
-   err = drm_tegra_bo_from_name(&resource->bo, screen->drm,
-                                handle->handle, 0);
+   err = drm_tegra_bo_open(screen->drm, handle->handle, 
+                           0, &resource->bo);
    if (err < 0) {
-      fprintf(stderr, "drm_tegra_bo_from_name() failed: %d\n", err);
+      fprintf(stderr, "drm_tegra_bo_open() failed: %d\n", err);
       FREE(resource);
       return NULL;
    }

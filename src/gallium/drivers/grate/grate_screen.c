@@ -2,6 +2,8 @@
 
 #include "drm-uapi/drm_fourcc.h"
 
+#include "opentegra_lib.h"
+
 #include "util/u_memory.h"
 #include "util/u_screen.h"
 
@@ -9,8 +11,6 @@
 #include "grate_context.h"
 #include "grate_resource.h"
 #include "grate_screen.h"
-
-#include "opentegra_lib.h"
 
 static const struct debug_named_value debug_options[] = {
    { "unimplemented", GRATE_DEBUG_UNIMPLEMENTED,
@@ -448,14 +448,14 @@ grate_screen_create(int fd)
       return NULL;
 
    screen->fd = fd;
-   err = drm_tegra_new(&screen->drm, fd);
+   err = drm_tegra_new(fd, &screen->drm);
    if (err) {
       fprintf(stderr, "drm_tegra_new err: %d\n", err);
       FREE(screen);
       return NULL;
    }
 
-   err = drm_tegra_channel_open(&drm_channel, screen->drm, DRM_TEGRA_GR3D);
+   err = drm_tegra_channel_open(screen->drm, DRM_TEGRA_GR3D, &drm_channel);
    if (err) {
       fprintf(stderr, "drm_tegra_channel_open err: %d\n", err);
       drm_tegra_close(screen->drm);

@@ -26,7 +26,7 @@ grate_channel_create(struct grate_context *context,
    struct drm_tegra_channel *drm_channel;
    struct grate_channel *channel;
 
-   err = drm_tegra_channel_open(&drm_channel, screen->drm, class);
+   err = drm_tegra_channel_open(screen->drm, class, &drm_channel);
    if (err < 0)
       return err;
 

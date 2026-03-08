@@ -41,6 +41,7 @@
 
 #include "host1x01_hardware.h"
 #include "hw_host1x01_uclass.h"
+#include "tegra.h"
 #include "grate_stream.h"
 
 #define ErrorMsg(fmt, args...) \
@@ -96,7 +97,6 @@ grate_stream_destroy(struct grate_stream *stream)
 int
 grate_stream_flush(struct grate_stream *stream)
 {
-   struct drm_tegra_fence *fence;
    int result = 0;
 
    if (!stream)
@@ -112,20 +112,18 @@ grate_stream_flush(struct grate_stream *stream)
       goto cleanup;
    }
 
-   result = drm_tegra_job_submit(stream->job, &fence);
+   result = drm_tegra_job_submit(stream->job, NULL);
    if (result != 0) {
       ErrorMsg("drm_tegra_job_submit() failed %d\n", result);
       result = -1;
       goto cleanup;
    }
 
-   result = drm_tegra_fence_wait_timeout(fence, 1000);
+   result = drm_tegra_job_wait(stream->job, 1000);
    if (result != 0) {
-      ErrorMsg("drm_tegra_fence_wait_timeout() failed %d\n", result);
+      ErrorMsg("drm_tegra_job_wait() failed %d\n", result);
       result = -1;
    }
-
-   drm_tegra_fence_free(fence);
 
 cleanup:
    drm_tegra_job_free(stream->job);
@@ -166,20 +164,20 @@ grate_stream_begin(struct grate_stream *stream)
       return -1;
    }
 
-   ret = drm_tegra_job_new(&stream->job, stream->channel);
+   ret = drm_tegra_job_new(stream->channel, &stream->job);
    if (ret != 0) {
       ErrorMsg("drm_tegra_job_new() failed %d\n", ret);
       return -1;
    }
 
-   ret = drm_tegra_pushbuf_new(&stream->buffer.pushbuf, stream->job);
+   ret = drm_tegra_job_get_pushbuf(stream->job, &stream->buffer.pushbuf);
    if (ret != 0) {
-      ErrorMsg("drm_tegra_pushbuf_new() failed %d\n", ret);
+      ErrorMsg("drm_tegra_job_get_pushbuf() failed %d\n", ret);
       drm_tegra_job_free(stream->job);
       return -1;
    }
 
-   ret = drm_tegra_pushbuf_prepare(stream->buffer.pushbuf, stream->num_words);
+   ret = drm_tegra_pushbuf_begin(stream->buffer.pushbuf, stream->num_words, &stream->buffer.ptr);
    if (ret != 0) {
       ErrorMsg("drm_tegra_pushbuf_prepare() failed %d\n", ret);
       drm_tegra_job_free(stream->job);
@@ -200,7 +198,7 @@ grate_stream_begin(struct grate_stream *stream)
 
 int
 grate_stream_push_reloc(struct grate_stream *stream,
-                        struct drm_tegra_bo *bo,
+                        struct drm_tegra_mapping *map,
                         unsigned offset)
 {
    int ret;
@@ -211,7 +209,7 @@ grate_stream_push_reloc(struct grate_stream *stream,
    }
 
    ret = drm_tegra_pushbuf_relocate(stream->buffer.pushbuf,
-                                    bo, offset, 0);
+                                    &stream->buffer.ptr, map, offset, 0, 0);
    if (ret != 0) {
       stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
       ErrorMsg("drm_tegra_pushbuf_relocate() failed %d\n", ret);
@@ -237,14 +235,7 @@ grate_stream_push(struct grate_stream *stream, uint32_t word)
       return -1;
    }
 
-   ret = drm_tegra_pushbuf_prepare(stream->buffer.pushbuf, 1);
-   if (ret != 0) {
-      stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
-      ErrorMsg("drm_tegra_pushbuf_prepare() failed %d\n", ret);
-      return -1;
-   }
-
-   *stream->buffer.pushbuf->ptr++ = word;
+   *stream->buffer.ptr++ = word;
 
    return 0;
 }
@@ -279,7 +270,7 @@ grate_stream_push_setclass(struct grate_stream *stream,
  * Mark end of stream. This function pushes last syncpoint increment for
  * marking end of stream.
  */
-
+ 
 int
 grate_stream_end(struct grate_stream *stream)
 {
@@ -290,8 +281,9 @@ grate_stream_end(struct grate_stream *stream)
       return -1;
    }
 
-   ret = drm_tegra_pushbuf_sync(stream->buffer.pushbuf,
-                                DRM_TEGRA_SYNCPT_COND_OP_DONE);
+   ret = drm_tegra_pushbuf_end(stream->buffer.pushbuf,
+                                stream->buffer.ptr);
+   stream->buffer.ptr = 0;
    if (ret != 0) {
       stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
       ErrorMsg("drm_tegra_pushbuf_sync() failed %d\n", ret);
@@ -339,7 +331,7 @@ int grate_stream_push_words(struct grate_stream *stream, const void *addr,
       return -1;
    }
 
-   ret = drm_tegra_pushbuf_prepare(stream->buffer.pushbuf, words);
+   ret = drm_tegra_pushbuf_begin(stream->buffer.pushbuf, words, &stream->buffer.ptr);
    if (ret != 0) {
       stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
       ErrorMsg("drm_tegra_pushbuf_prepare() failed %d\n", ret);
@@ -354,7 +346,7 @@ int grate_stream_push_words(struct grate_stream *stream, const void *addr,
    }
 
    /* Copy the contents */
-   pushbuf_ptr = stream->buffer.pushbuf->ptr;
+   pushbuf_ptr = stream->buffer.ptr;
    memcpy(pushbuf_ptr, addr, words * sizeof(uint32_t));
 
    /* Copy relocs */
@@ -362,11 +354,11 @@ int grate_stream_push_words(struct grate_stream *stream, const void *addr,
    for (; num_relocs; num_relocs--) {
       reloc_arg = va_arg(ap, struct grate_reloc);
 
-      stream->buffer.pushbuf->ptr  = pushbuf_ptr;
-      stream->buffer.pushbuf->ptr += reloc_arg.var_offset / sizeof(uint32_t);
+      stream->buffer.ptr  = pushbuf_ptr;
+      stream->buffer.ptr += reloc_arg.var_offset / sizeof(uint32_t);
 
       ret = drm_tegra_pushbuf_relocate(stream->buffer.pushbuf, reloc_arg.bo,
-                                       reloc_arg.offset, 0);
+                                       reloc_arg.offset, 0, 0);
       if (ret != 0) {
          stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
          ErrorMsg("drm_tegra_pushbuf_relocate() failed %d\n", ret);
@@ -375,7 +367,7 @@ int grate_stream_push_words(struct grate_stream *stream, const void *addr,
    }
    va_end(ap);
 
-   stream->buffer.pushbuf->ptr = pushbuf_ptr + words;
+   stream->buffer.ptr = pushbuf_ptr + words;
 
    return ret ? -1 : 0;
 }
