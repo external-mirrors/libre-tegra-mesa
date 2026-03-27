@@ -5,17 +5,6 @@ cd "$(dirname "$0")"
 
 source ./my_common.sh
 
-EXTRA_ARGS=""
-if [[ -f "/sys/devices/soc0/family" ]] && [[ "$(cat /sys/devices/soc0/family)" = "Tegra" ]]; then
-	echo "Tegra! skipping drm-shim";
-
-	# gnu2 tlsdesc is broken in binutils
-	export CFLAGS="$CFLAGS -mtls-dialect=gnu"
-	export CXXFLAGS="$CXXFLAGS -mtls-dialect=gnu"
-else
-	EXTRA_ARGS="${EXTRA_ARGS} -Dtools=drm-shim"
-fi
-
 meson setup \
 	-Dbuildtype=debug \
 	-Db_ndebug=false \
@@ -34,6 +23,6 @@ meson setup \
 	-Degl-native-platform=drm \
 	-Dlegacy-x11=dri2 \
 	-Dprefix="${INSTALL_DIR}" \
-	${EXTRA_ARGS} \
+	${EXTRA_SETUP_ARGS} \
 	${@} \
 	"${BUILD_DIR}"
