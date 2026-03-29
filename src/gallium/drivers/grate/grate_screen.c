@@ -2,7 +2,7 @@
 
 #include "drm-uapi/drm_fourcc.h"
 
-#include "opentegra_lib.h"
+#include "tegra.h"
 
 #include "util/u_memory.h"
 #include "util/u_screen.h"

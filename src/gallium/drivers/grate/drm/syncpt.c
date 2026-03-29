@@ -31,7 +31,7 @@
 
 #include "private.h"
 
-drm_public int
+int
 drm_tegra_syncpoint_new(struct drm_tegra *drm,
                         struct drm_tegra_syncpoint **syncptp)
 {
@@ -59,7 +59,7 @@ drm_tegra_syncpoint_new(struct drm_tegra *drm,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_syncpoint_free(struct drm_tegra_syncpoint *syncpt)
 {
     struct drm_tegra_syncpoint_free args;
@@ -81,7 +81,7 @@ drm_tegra_syncpoint_free(struct drm_tegra_syncpoint *syncpt)
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_fence_wait(struct drm_tegra_fence *fence, unsigned long timeout)
 {
     struct drm_tegra_syncpoint_wait args;

@@ -31,7 +31,7 @@
 #include <stdint.h>
 
 #include "class_ids.h"
-#include "opentegra_lib.h"
+#include "tegra.h"
 
 enum grate_stream_status {
    GRATE_STREAM_FREE,

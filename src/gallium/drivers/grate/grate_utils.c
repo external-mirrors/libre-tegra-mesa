@@ -22,38 +22,51 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef __DRM_OPENTEGRA_H__
-#define __DRM_OPENTEGRA_H__ 1
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <unistd.h>
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include "uapi/tegra.h"
+#include "grate_utils.h"
 
-#ifndef __maybe_unused
-#define __maybe_unused  __attribute__((unused))
-#endif
+static enum drm_tegra_soc_id read_chip_id(const char *path)
+{
+	FILE *file = fopen(path, "r");
+	if (file) {
+		unsigned int id = 0;
 
-enum drm_tegra_soc_id {
-	DRM_TEGRA_INVALID_SOC,
-	DRM_TEGRA_UNKOWN_SOC,
-	DRM_TEGRA20_SOC,
-	DRM_TEGRA30_SOC,
-	DRM_TEGRA114_SOC,
-};
+		if (fscanf(file, "%d", &id) != 1)
+			fprintf(stderr, "fscanf failed for %s\n", path);
+		fclose(file);
 
-static __maybe_unused const char * const drm_tegra_soc_names[] = {
-	[DRM_TEGRA_INVALID_SOC] = "invalid",
-	[DRM_TEGRA_UNKOWN_SOC] = "unknown",
-	[DRM_TEGRA20_SOC] = "Tegra20",
-	[DRM_TEGRA30_SOC] = "Tegra30",
-	[DRM_TEGRA114_SOC] = "Tegra114",
-};
+		switch (id) {
+		case 0x20:
+			return DRM_TEGRA20_SOC;
+		case 0x30:
+			return DRM_TEGRA30_SOC;
+		case 0x35:
+			return DRM_TEGRA114_SOC;
+		}
 
-struct drm_tegra_bo;
+		return DRM_TEGRA_UNKOWN_SOC;
+	}
 
-enum drm_tegra_soc_id drm_tegra_get_soc_id(struct drm_tegra *drm);
+	return DRM_TEGRA_INVALID_SOC;
+}
 
-int drm_tegra_bo_cpu_prep(struct drm_tegra_bo *bo,
-			  uint32_t flags, uint32_t timeout_us);
-#endif /* __DRM_TEGRA_H__ */
+enum drm_tegra_soc_id drm_tegra_get_soc_id(struct drm_tegra *drm)
+{
+	static enum drm_tegra_soc_id sid = DRM_TEGRA_INVALID_SOC;
+
+	if (sid != DRM_TEGRA_INVALID_SOC)
+		return sid;
+
+	sid = read_chip_id("/sys/devices/soc0/soc_id");
+	if (sid != DRM_TEGRA_INVALID_SOC)
+		return sid;
+
+	VDBG_DRM(drm, "failed to identify SoC version\n");
+	sid = DRM_TEGRA_UNKOWN_SOC;
+
+	return sid;
+}

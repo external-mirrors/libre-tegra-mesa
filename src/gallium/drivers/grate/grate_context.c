@@ -12,6 +12,7 @@
 #include "grate_screen.h"
 #include "grate_state.h"
 #include "grate_surface.h"
+#include "grate_utils.h"
 
 #include "host1x01_hardware.h"
 #include "tgr_3d.xml.h"

@@ -33,7 +33,7 @@
 
 #include "private.h"
 
-drm_public int
+int
 drm_tegra_channel_open(struct drm_tegra *drm,
                        enum drm_tegra_class client,
                        struct drm_tegra_channel **channelp)
@@ -107,7 +107,7 @@ drm_tegra_channel_open(struct drm_tegra *drm,
     return 0;
 }
 
-drm_public int drm_tegra_channel_close(struct drm_tegra_channel *channel)
+int drm_tegra_channel_close(struct drm_tegra_channel *channel)
 {
     struct drm_tegra_channel_close args;
     struct drm_tegra *drm;
@@ -130,13 +130,13 @@ drm_public int drm_tegra_channel_close(struct drm_tegra_channel *channel)
     return 0;
 }
 
-drm_public unsigned int
+unsigned int
 drm_tegra_channel_get_version(struct drm_tegra_channel *channel)
 {
     return channel->version;
 }
 
-drm_public int
+int
 drm_tegra_channel_map(struct drm_tegra_channel *channel,
                       struct drm_tegra_bo *bo, uint32_t flags,
                       struct drm_tegra_mapping **mapp)
@@ -171,7 +171,7 @@ drm_tegra_channel_map(struct drm_tegra_channel *channel,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_channel_unmap(struct drm_tegra_mapping *map)
 {
     struct drm_tegra_channel *channel = map->channel;

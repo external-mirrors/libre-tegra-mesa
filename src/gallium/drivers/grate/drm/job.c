@@ -61,7 +61,7 @@ drm_tegra_job_add_command(struct drm_tegra_job *job, uint32_t type,
     return command;
 }
 
-drm_public int
+int
 drm_tegra_job_new(struct drm_tegra_channel *channel,
                   struct drm_tegra_job **jobp)
 {
@@ -79,7 +79,7 @@ drm_tegra_job_new(struct drm_tegra_channel *channel,
     return 0;
 }
 
-drm_public int drm_tegra_job_free(struct drm_tegra_job *job)
+int drm_tegra_job_free(struct drm_tegra_job *job)
 {
     if (!job)
         return -EINVAL;
@@ -98,7 +98,7 @@ drm_public int drm_tegra_job_free(struct drm_tegra_job *job)
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_job_get_pushbuf(struct drm_tegra_job *job,
                           struct drm_tegra_pushbuf **pushbufp)
 {
@@ -128,7 +128,7 @@ drm_tegra_job_get_pushbuf(struct drm_tegra_job *job,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_job_submit(struct drm_tegra_job *job, struct drm_tegra_fence *fence)
 {
     struct drm_tegra_channel *channel = job->channel;
@@ -163,7 +163,7 @@ drm_tegra_job_submit(struct drm_tegra_job *job, struct drm_tegra_fence *fence)
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_job_wait(struct drm_tegra_job *job, unsigned long timeout)
 {
     struct drm_tegra_channel *channel = job->channel;

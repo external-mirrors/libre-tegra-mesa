@@ -55,7 +55,7 @@ void drm_tegra_pushbuf_free(struct drm_tegra_pushbuf *pushbuf)
  * @pushbuf: push buffer
  * @words: maximum number of words in series of pushes to follow
  */
-drm_public int
+int
 drm_tegra_pushbuf_begin(struct drm_tegra_pushbuf *pushbuf,
                         unsigned int words, uint32_t **ptrp)
 {
@@ -84,7 +84,7 @@ drm_tegra_pushbuf_begin(struct drm_tegra_pushbuf *pushbuf,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_pushbuf_end(struct drm_tegra_pushbuf *pushbuf, uint32_t *ptr)
 {
     struct drm_tegra_submit_cmd *command;
@@ -101,7 +101,7 @@ drm_tegra_pushbuf_end(struct drm_tegra_pushbuf *pushbuf, uint32_t *ptr)
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_pushbuf_wait(struct drm_tegra_pushbuf *pushbuf,
                        struct drm_tegra_syncpoint *syncpt,
                        uint32_t value)
@@ -120,7 +120,7 @@ drm_tegra_pushbuf_wait(struct drm_tegra_pushbuf *pushbuf,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_pushbuf_relocate(struct drm_tegra_pushbuf *pushbuf, uint32_t **ptrp,
                            struct drm_tegra_mapping *target,
                            unsigned long offset, unsigned int shift,
@@ -154,7 +154,7 @@ drm_tegra_pushbuf_relocate(struct drm_tegra_pushbuf *pushbuf, uint32_t **ptrp,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_pushbuf_sync(struct drm_tegra_pushbuf *pushbuf,
                        struct drm_tegra_syncpoint *syncpt,
                        unsigned int count)
@@ -167,7 +167,7 @@ drm_tegra_pushbuf_sync(struct drm_tegra_pushbuf *pushbuf,
     return 0;
 }
 
-drm_public int
+int
 drm_tegra_pushbuf_sync_cond(struct drm_tegra_pushbuf *pushbuf, uint32_t **ptrp,
                             struct drm_tegra_syncpoint *syncpt,
                             enum drm_tegra_sync_cond cond)
