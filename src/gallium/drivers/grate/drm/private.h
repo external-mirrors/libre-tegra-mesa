@@ -32,11 +32,6 @@
 #include "drm-uapi/tegra_drm.h"
 #include "tegra.h"
 
-#define container_of(ptr, type, member) ({                      \
-        const __typeof__(((type *)0)->member) *__mptr = (ptr);  \
-        (type *)((char *)__mptr - offsetof(type, member));      \
-    })
-
 enum host1x_class {
     HOST1X_CLASS_HOST1X = 0x01,
     HOST1X_CLASS_GR2D = 0x51,

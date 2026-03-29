@@ -30,7 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "util_math.h"
+#include "util/u_math.h"
 #include "private.h"
 
 #define HOST1X_OPCODE_NONINCR(offset, count) \
@@ -66,7 +66,7 @@ drm_tegra_pushbuf_begin(struct drm_tegra_pushbuf *pushbuf,
 
     if (pushbuf->ptr + words >= pushbuf->end) {
         words = pushbuf->end - pushbuf->start + words;
-        size = ALIGN(words * 4, job->page_size);
+        size = align(words * 4, job->page_size);
         offset = pushbuf->ptr - pushbuf->start;
 
         ptr = realloc(pushbuf->start, size);

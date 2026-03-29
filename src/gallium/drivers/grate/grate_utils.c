@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #include "grate_utils.h"
 
