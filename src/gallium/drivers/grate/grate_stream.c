@@ -25,6 +25,7 @@
  *    Arto Merilainen <amerilainen@nvidia.com>
  */
 
+#include "util/hash_table.h"
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <sys/ioctl.h>
@@ -41,11 +42,16 @@
 
 #include "host1x01_hardware.h"
 #include "hw_host1x01_uclass.h"
+#include "private.h"
 #include "grate_stream.h"
 
 #define ErrorMsg(fmt, args...) \
     fprintf(stderr, "%s:%d/%s(): " fmt, \
             __FILE__, __LINE__, __func__, ##args)
+
+static void __delete_entry_bo_mapping(struct hash_entry *entry) {
+   drm_tegra_channel_unmap(entry->data);
+}
 
 /*
  * grate_stream_create(channel)
@@ -65,6 +71,7 @@ grate_stream_create(struct drm_tegra *drm,
    stream->status    = GRATE_STREAM_FREE;
    stream->channel   = channel;
    stream->num_words = words_num;
+   stream->bo_mappings = _mesa_pointer_hash_table_create(NULL);
 
    return 0;
 }
@@ -81,6 +88,7 @@ grate_stream_destroy(struct grate_stream *stream)
    if (!stream)
       return;
 
+   _mesa_hash_table_destroy(stream->bo_mappings, __delete_entry_bo_mapping);
    drm_tegra_job_free(stream->job);
 }
 
@@ -125,6 +133,8 @@ grate_stream_flush(struct grate_stream *stream)
    }
 
 cleanup:
+   _mesa_hash_table_clear(stream->bo_mappings, __delete_entry_bo_mapping);
+
    drm_tegra_job_free(stream->job);
 
    stream->job = NULL;
@@ -189,6 +199,34 @@ grate_stream_begin(struct grate_stream *stream)
    return 0;
 }
 
+static int
+__grate_stream_get_channel_mapping(struct grate_stream *stream,
+                                   struct drm_tegra_bo *bo,
+                                   uint32_t flags,
+                                   struct drm_tegra_mapping **mapping)
+{
+   assert(stream && bo && mapping);
+   if (!stream || !bo || !mapping)
+       return -EINVAL;
+
+   int ret = 0;
+   struct hash_entry *bo_mapping_entry = _mesa_hash_table_search(stream->bo_mappings, bo);
+   if (bo_mapping_entry) {
+      *mapping = bo_mapping_entry->data;
+   } else {
+      ret = drm_tegra_channel_map(stream->channel, bo, 0, mapping);
+      if (ret < 0) {
+         stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
+         ErrorMsg("drm_tegra_channel_map() failed: %d\n", ret);
+         return ret;
+      }
+      
+      _mesa_hash_table_insert(stream->bo_mappings, bo, *mapping);
+   }
+   
+   return ret;
+}
+
 /*
  * grate_stream_push_reloc(stream, h, offset)
  *
@@ -197,25 +235,30 @@ grate_stream_begin(struct grate_stream *stream)
 
 int
 grate_stream_push_reloc(struct grate_stream *stream,
-                        struct drm_tegra_mapping *map,
+                        struct drm_tegra_bo *bo,
                         unsigned offset)
 {
    int ret;
+   struct drm_tegra_mapping *mapping = NULL;
 
    if (!(stream && stream->status == GRATE_STREAM_CONSTRUCT)) {
       ErrorMsg("Stream status isn't CONSTRUCT\n");
       return -1;
    }
+   
+   ret = __grate_stream_get_channel_mapping(stream, bo, 0, &mapping);
+   if (ret < 0)
+      return ret;
 
    ret = drm_tegra_pushbuf_relocate(stream->buffer.pushbuf,
-                                    &stream->buffer.ptr, map, offset, 0, 0);
-   if (ret != 0) {
+                                    &stream->buffer.ptr, mapping, offset, 0, 0);
+   if (ret < 0) {
       stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
       ErrorMsg("drm_tegra_pushbuf_relocate() failed %d\n", ret);
-      return -1;
+      return ret;
    }
 
-   return 0;
+   return ret;
 }
 
 /*
@@ -227,8 +270,6 @@ grate_stream_push_reloc(struct grate_stream *stream,
 int
 grate_stream_push(struct grate_stream *stream, uint32_t word)
 {
-   int ret;
-
    if (!(stream && stream->status == GRATE_STREAM_CONSTRUCT)) {
       ErrorMsg("Stream status isn't CONSTRUCT\n");
       return -1;
@@ -237,30 +278,6 @@ grate_stream_push(struct grate_stream *stream, uint32_t word)
    *stream->buffer.ptr++ = word;
 
    return 0;
-}
-
-/*
- * grate_stream_push_setclass(stream, class_id)
- *
- * Push "set class" opcode to the stream. Do nothing if the class is already
- * active
- */
-
-int
-grate_stream_push_setclass(struct grate_stream *stream,
-                           enum host1x_class class_id)
-{
-   int result;
-
-   if (stream->class_id == class_id)
-      return 0;
-
-   result = grate_stream_push(stream, host1x_opcode_setclass(class_id, 0, 0));
-
-   if (result == 0)
-      stream->class_id = class_id;
-
-   return result;
 }
 
 /*
@@ -321,6 +338,7 @@ int grate_stream_push_words(struct grate_stream *stream, const void *addr,
                             unsigned words, int num_relocs, ...)
 {
    struct grate_reloc reloc_arg;
+   struct drm_tegra_mapping *mapping;
    va_list ap;
    uint32_t *pushbuf_ptr;
    int ret;
@@ -355,12 +373,17 @@ int grate_stream_push_words(struct grate_stream *stream, const void *addr,
 
       stream->buffer.ptr  = pushbuf_ptr;
       stream->buffer.ptr += reloc_arg.var_offset / sizeof(uint32_t);
+      
+      ret = __grate_stream_get_channel_mapping(stream, reloc_arg.bo, 0, &mapping);
+      if (ret < 0)
+         break;
 
-      ret = drm_tegra_pushbuf_relocate(stream->buffer.pushbuf, reloc_arg.bo,
+      ret = drm_tegra_pushbuf_relocate(stream->buffer.pushbuf,
+                                       &stream->buffer.ptr, mapping,
                                        reloc_arg.offset, 0, 0);
       if (ret != 0) {
          stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
-         ErrorMsg("drm_tegra_pushbuf_relocate() failed %d\n", ret);
+         ErrorMsg("__grate_stream_get_channel_mapping() failed %d\n", ret);
          break;
       }
    }

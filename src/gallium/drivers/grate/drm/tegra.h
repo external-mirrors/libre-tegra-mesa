@@ -27,7 +27,6 @@
 
 #include <stdint.h>
 #include <stdlib.h>
-
 #include "drm-uapi/tegra_drm.h"
 
 enum drm_tegra_class {

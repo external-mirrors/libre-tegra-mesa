@@ -32,7 +32,6 @@ files_libgrate = files(
   'vp/pack.c',
   'vp/tgsi.c',
   'vp/vpir.h',
-  'class_ids.h',
   'host1x01_hardware.h',
   'hw_host1x01_uclass.h',
   'grate_common.h',

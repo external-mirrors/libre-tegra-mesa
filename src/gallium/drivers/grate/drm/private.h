@@ -32,17 +32,45 @@
 #include "drm-uapi/tegra_drm.h"
 #include "tegra.h"
 
+#ifndef NDEBUG
+#define VDBG_DRM(DRM, ...) do {					\
+	if ((DRM)->debug_bo) {						\
+		fprintf(stderr, "%s: %d: ", __func__, __LINE__);	\
+		fprintf(stderr, __VA_ARGS__);				\
+	}								\
+} while (0)
+
+#define VDBG_BO(BO, FMT, ...) do {					\
+	if (BO->drm->debug_bo)						\
+		fprintf(stderr,						\
+			"%s: %d:\tBO %p size %u handle %u "	\
+			"flags 0x%08X refcnt %d map %p "	\
+			FMT,						\
+			__func__, __LINE__, BO, BO->size, BO->handle,	\
+			BO->flags, p_atomic_read(&BO->refcnt), BO->map,	\
+			__VA_ARGS__);	\
+} while (0)
+
+#else
+#define VDBG_DRM(DRM, FMT, ...)	do {} while (0)
+#define VDBG_BO(BO, FMT, ...)	do {} while (0)
+#endif
+#define DBG_BO(BO, FMT) VDBG_BO(BO, FMT "%s", "")
+
 enum host1x_class {
     HOST1X_CLASS_HOST1X = 0x01,
     HOST1X_CLASS_GR2D = 0x51,
     HOST1X_CLASS_GR2D_SB = 0x52,
-    HOST1X_CLASS_VIC = 0x5d,
+    HOST1X_CLASS_VIC = 0x5d,  
     HOST1X_CLASS_GR3D = 0x60,
 };
 
 struct drm_tegra {
     bool close;
     int fd;
+#ifndef NDEBUG
+    bool debug_bo;
+#endif
 };
 
 struct drm_tegra_bo {

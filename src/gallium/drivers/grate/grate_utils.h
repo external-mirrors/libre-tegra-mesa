@@ -49,8 +49,6 @@ static __maybe_unused const char * const drm_tegra_soc_names[] = {
 	[DRM_TEGRA114_SOC] = "Tegra114",
 };
 
-struct drm_tegra_bo;
-
-enum drm_tegra_soc_id drm_tegra_get_soc_id(struct drm_tegra *drm);
+enum drm_tegra_soc_id drm_tegra_get_soc_id(void);
 
 #endif /* __DRM_TEGRA_H__ */

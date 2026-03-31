@@ -52,8 +52,6 @@ grate_init_state(struct grate_context *context)
 {
    struct grate_stream *stream = &context->gr3d->stream;
 
-   grate_stream_push_setclass(stream, HOST1X_CLASS_GR3D);
-
    /* Tegra114 specific stuff */
    grate_stream_push(stream, host1x_opcode_imm(0xe44, 0x0000));
    grate_stream_push(stream, host1x_opcode_imm(0x807, 0x0000));
@@ -302,7 +300,7 @@ grate_draw_vbo(struct pipe_context *pcontext,
 
    err = grate_stream_begin(stream);
    if (err < 0) {
-      fprintf(stderr, "grate_stream_begin() failed: %d\n", err);
+      fprintf(stderr, "%s: grate_stream_begin() failed: %d\n", __func__, err);
       return;
    }
 
@@ -324,7 +322,7 @@ grate_draw_vbo(struct pipe_context *pcontext,
       unsigned index_offset = 0;
       if (info->has_user_indices) {
          if (!util_upload_index_buffer(pcontext, info, draws, &index_buffer, &index_offset, 64)) {
-            fprintf(stderr, "util_upload_index_buffer() failed\n");
+            fprintf(stderr, "%s: util_upload_index_buffer() failed\n", __func__);
             return;
          }
       } else

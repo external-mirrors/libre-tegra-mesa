@@ -37,7 +37,7 @@ static enum drm_tegra_soc_id read_chip_id(const char *path)
 		unsigned int id = 0;
 
 		if (fscanf(file, "%d", &id) != 1)
-			fprintf(stderr, "fscanf failed for %s\n", path);
+		   fprintf(stderr, "%s: fscanf failed for %s\n", __func__, path);
 		fclose(file);
 
 		switch (id) {
@@ -55,7 +55,7 @@ static enum drm_tegra_soc_id read_chip_id(const char *path)
 	return DRM_TEGRA_INVALID_SOC;
 }
 
-enum drm_tegra_soc_id drm_tegra_get_soc_id(struct drm_tegra *drm)
+enum drm_tegra_soc_id drm_tegra_get_soc_id(void)
 {
 	static enum drm_tegra_soc_id sid = DRM_TEGRA_INVALID_SOC;
 
@@ -66,7 +66,7 @@ enum drm_tegra_soc_id drm_tegra_get_soc_id(struct drm_tegra *drm)
 	if (sid != DRM_TEGRA_INVALID_SOC)
 		return sid;
 
-	VDBG_DRM(drm, "failed to identify SoC version\n");
+	fprintf(stderr, "%s: failed to identify SoC version\n", __func__);
 	sid = DRM_TEGRA_UNKOWN_SOC;
 
 	return sid;

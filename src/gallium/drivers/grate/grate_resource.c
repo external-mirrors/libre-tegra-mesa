@@ -284,8 +284,6 @@ grate_blit(struct pipe_context *pcontext, const struct pipe_blit_info *info)
       return;
    }
 
-   grate_stream_push_setclass(&gr2d->stream, HOST1X_CLASS_GR2D);
-
    grate_stream_push(&gr2d->stream, host1x_opcode_mask(0x009, 0x9));
    grate_stream_push(&gr2d->stream, 0x0000003a);            /* 0x009 - trigger */
    grate_stream_push(&gr2d->stream, 0x00000000);            /* 0x00c - cmdsel */
@@ -370,8 +368,6 @@ fill(struct grate_channel *gr2d,
       fprintf(stderr, "grate_stream_begin() failed: %d\n", err);
       return -1;
    }
-
-   grate_stream_push_setclass(&gr2d->stream, HOST1X_CLASS_GR2D);
 
    grate_stream_push(&gr2d->stream, host1x_opcode_mask(0x09, 0x09));
    grate_stream_push(&gr2d->stream, 0x0000003a);           /* 0x009 - trigger */

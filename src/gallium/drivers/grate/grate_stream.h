@@ -29,8 +29,8 @@
 #define GRATE_STREAM_H_
 
 #include <stdint.h>
+#include "util/u_dynarray.h"
 
-#include "class_ids.h"
 #include "tegra.h"
 
 enum grate_stream_status {
@@ -50,6 +50,7 @@ struct grate_stream {
 
    struct drm_tegra_job *job;
    struct drm_tegra_channel *channel;
+   struct hash_table *bo_mappings;
 
    struct grate_command_buffer buffer;
    int num_words;
@@ -83,10 +84,6 @@ grate_stream_flush(struct grate_stream *stream);
 
 int
 grate_stream_push(struct grate_stream *stream, uint32_t word);
-
-int
-grate_stream_push_setclass(struct grate_stream *stream,
-                           enum host1x_class class_id);
 
 int
 grate_stream_push_reloc(struct grate_stream *stream,

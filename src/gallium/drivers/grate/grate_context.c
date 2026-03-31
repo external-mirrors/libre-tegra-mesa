@@ -88,7 +88,7 @@ grate_screen_context_create(struct pipe_screen *pscreen,
    if (!context)
       return NULL;
 
-   if (drm_tegra_get_soc_id(screen->drm) == DRM_TEGRA114_SOC)
+   if (drm_tegra_get_soc_id() == DRM_TEGRA114_SOC)
       context->tegra114 = true;
 
    context->base.screen = pscreen;

@@ -25,9 +25,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdio.h>
 #include <unistd.h>
+#include <assert.h>
 
-#include <sys/mman.h>
+#include <util/os_mman.h>
+#include <util/u_atomic.h>
+#include <util/macros.h>
 
 #include <xf86drm.h>
 
@@ -39,12 +43,26 @@ static void drm_tegra_bo_free(struct drm_tegra_bo *bo)
 {
     struct drm_tegra *drm = bo->drm;
 
+    DBG_BO(bo, "\n");
+
     if (bo->map)
         munmap(bo->map, bo->size);
 
     drmCloseBufferHandle(drm->fd, bo->handle);
 
     free(bo);
+}
+
+static void drm_tegra_setup_debug(struct drm_tegra *drm)
+{
+#ifndef NDEBUG
+    char *str;
+
+    str = getenv("LIBDRM_TEGRA_DEBUG_BO");
+    drm->debug_bo = (str && strcmp(str, "1") == 0);
+#else 
+    
+#endif
 }
 
 static int drm_tegra_wrap(struct drm_tegra **drmp, int fd, bool close)
@@ -60,7 +78,9 @@ static int drm_tegra_wrap(struct drm_tegra **drmp, int fd, bool close)
 
     drm->close = close;
     drm->fd = fd;
-
+    
+	drm_tegra_setup_debug(drm);
+    
     *drmp = drm;
 
     return 0;
@@ -108,7 +128,7 @@ static struct drm_tegra_bo *drm_tegra_bo_alloc(struct drm_tegra *drm,
     if (!bo)
         return NULL;
 
-    atomic_set(&bo->ref, 1);
+    p_atomic_set(&bo->refcnt, 1);
     bo->handle = handle;
     bo->flags = flags;
     bo->size = size;
@@ -139,12 +159,16 @@ drm_tegra_bo_new(struct drm_tegra *drm, uint32_t flags, uint32_t size,
     err = drmCommandWriteRead(drm->fd, DRM_TEGRA_GEM_CREATE, &args,
                               sizeof(args));
     if (err < 0) {
+        VDBG_DRM(drm, "failed size %u bytes flags 0x%08X err %d (%s)\n",
+           size, flags, err, strerror(-err));
         err = -errno;
         free(bo);
         return err;
     }
 
     bo->handle = args.handle;
+
+    DBG_BO(bo, "success new\n");
 
     *bop = bo;
 
@@ -164,6 +188,8 @@ drm_tegra_bo_wrap(struct drm_tegra *drm, uint32_t handle, uint32_t flags,
     if (!bo)
         return -ENOMEM;
 
+    DBG_BO(bo, "success\n");
+
     *bop = bo;
 
     return 0;
@@ -171,16 +197,21 @@ drm_tegra_bo_wrap(struct drm_tegra *drm, uint32_t handle, uint32_t flags,
 
 struct drm_tegra_bo *drm_tegra_bo_ref(struct drm_tegra_bo *bo)
 {
-    if (bo)
-        atomic_inc(&bo->ref);
+   if (bo) {
+      DBG_BO(bo, "\n");
+      ASSERTED int count = p_atomic_inc_return(&bo->refcnt);
+      assert(count != 1);
+   }
 
     return bo;
 }
 
 void drm_tegra_bo_unref(struct drm_tegra_bo *bo)
 {
-    if (bo && atomic_dec_and_test(&bo->ref))
-        drm_tegra_bo_free(bo);
+    if (bo && p_atomic_dec_return(&bo->refcnt) == 0) {
+       DBG_BO(bo, "\n");
+       drm_tegra_bo_free(bo);
+    }
 }
 
 int
@@ -207,17 +238,24 @@ int drm_tegra_bo_map(struct drm_tegra_bo *bo, void **ptr)
 
         err = drmCommandWriteRead(drm->fd, DRM_TEGRA_GEM_MMAP, &args,
                                   sizeof(args));
-        if (err < 0)
+        if (err < 0) {
+            VDBG_BO(bo, "failed get mapping offset err %d (%s)\n",
+               err, strerror(-err));
             return -errno;
+        }
 
         bo->offset = args.offset;
 
-        bo->map = drm_mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+        bo->map = os_mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
                            drm->fd, bo->offset);
         if (bo->map == MAP_FAILED) {
+            VDBG_BO(bo, "failed to map offset 0x%llX err %d (%s)\n",
+               args.offset, -errno, strerror(errno));
             bo->map = NULL;
             return -errno;
         }
+
+        DBG_BO(bo, "success\n");
     }
 
     if (ptr)
@@ -233,6 +271,8 @@ int drm_tegra_bo_unmap(struct drm_tegra_bo *bo)
 
     if (!bo->map)
         return 0;
+
+    DBG_BO(bo, "\n");
 
     if (munmap(bo->map, bo->size))
         return -errno;
@@ -252,11 +292,15 @@ int drm_tegra_bo_get_name(struct drm_tegra_bo *bo, uint32_t *name)
     args.handle = bo->handle;
 
     err = drmIoctl(drm->fd, DRM_IOCTL_GEM_FLINK, &args);
-    if (err < 0)
+    if (err < 0) {
+        VDBG_BO(bo, "err %d strerror(%s)\n", err, strerror(-err));
         return err;
+    }
 
     if (name)
         *name = args.name;
+
+    DBG_BO(bo, "\n");
 
     return 0;
 }
@@ -277,11 +321,16 @@ drm_tegra_bo_open(struct drm_tegra *drm, uint32_t name, uint32_t flags,
     args.name = name;
 
     err = drmIoctl(drm->fd, DRM_IOCTL_GEM_OPEN, &args);
-    if (err < 0)
+    if (err < 0) {
+        VDBG_DRM(drm, "failed name 0x%08X err %d strerror(%s)\n",
+           name, err, strerror(-err));
         goto free;
+    }
 
     bo->handle = args.handle;
     bo->size = args.size;
+    
+	DBG_BO(bo, "success\n");
 
     *bop = bo;
 
@@ -299,8 +348,11 @@ int drm_tegra_bo_export(struct drm_tegra_bo *bo, uint32_t flags)
     flags |= DRM_CLOEXEC;
 
     err = drmPrimeHandleToFD(bo->drm->fd, bo->handle, flags, &fd);
-    if (err < 0)
+    if (err < 0) {
+        VDBG_BO(bo, "failed err %d strerror(%s)\n",
+            err, strerror(-err));
         return err;
+    }
 
     return fd;
 }
@@ -341,8 +393,11 @@ drm_tegra_bo_import(struct drm_tegra *drm, int fd, struct drm_tegra_bo **bop)
         return -ENOMEM;
 
     err = drmPrimeFDToHandle(drm->fd, fd, &bo->handle);
-    if (err < 0)
+    if (err < 0) {
+        VDBG_BO(bo, "failed err %d strerror(%s)\n",
+            err, strerror(-err));
         goto free;
+    }
 
     *bop = bo;
 
