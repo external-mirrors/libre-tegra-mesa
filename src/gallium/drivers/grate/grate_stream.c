@@ -205,6 +205,7 @@ __grate_stream_get_channel_mapping(struct grate_stream *stream,
                                    uint32_t flags,
                                    struct drm_tegra_mapping **mapping)
 {
+   //TODO make cache work with flags?
    assert(stream && bo && mapping);
    if (!stream || !bo || !mapping)
        return -EINVAL;
@@ -214,7 +215,7 @@ __grate_stream_get_channel_mapping(struct grate_stream *stream,
    if (bo_mapping_entry) {
       *mapping = bo_mapping_entry->data;
    } else {
-      ret = drm_tegra_channel_map(stream->channel, bo, 0, mapping);
+      ret = drm_tegra_channel_map(stream->channel, bo, DRM_TEGRA_CHANNEL_MAP_READ_WRITE, mapping);
       if (ret < 0) {
          stream->status = GRATE_STREAM_CONSTRUCTION_FAILED;
          ErrorMsg("drm_tegra_channel_map() failed: %d\n", ret);
