@@ -11,7 +11,7 @@ if [[ -d build && -z "${FORCE_SETUP}" ]]; then
         echo "> Skipping meson setup, build exists"
 else
         echo "> Running meson setup"
-        nix-shell -p ${DEPS} --run "./my_setup.sh"
+        nix-shell -p ${DEPS} --run "./my_setup.sh ${@}"
 fi
 
 echo "> Running meson compile"
