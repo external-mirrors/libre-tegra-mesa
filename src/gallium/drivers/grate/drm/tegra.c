@@ -92,16 +92,20 @@ int drm_tegra_new(int fd, struct drm_tegra **drmp)
     drmVersionPtr version;
 
     version = drmGetVersion(fd);
-    if (!version)
-        return -ENOMEM;
+    if (!version) {
+       fprintf(stderr, "cannot get version: %s", strerror(errno));
+       return -ENOMEM;
+    }
 
     if (!strncmp(version->name, "tegra", version->name_len))
         supported = true;
 
     drmFreeVersion(version);
 
-    if (!supported)
+    if (!supported) {
+        fprintf(stderr, "%s got unknown: '%s'\n", __func__, version->name);
         return -ENOTSUP;
+    }
 
     return drm_tegra_wrap(drmp, fd, false);
 }
