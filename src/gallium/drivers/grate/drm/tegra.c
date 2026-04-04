@@ -97,13 +97,15 @@ int drm_tegra_new(int fd, struct drm_tegra **drmp)
        return -ENOMEM;
     }
 
-    if (!strncmp(version->name, "tegra", version->name_len))
+    if (!strncmp(version->name, "tegra", version->name_len)) {
         supported = true;
+    } else {
+       fprintf(stderr, "%s got unknown: '%s'\n", __func__, version->name);
+    }
 
     drmFreeVersion(version);
 
     if (!supported) {
-        fprintf(stderr, "%s got unknown: '%s'\n", __func__, version->name);
         return -ENOTSUP;
     }
 
