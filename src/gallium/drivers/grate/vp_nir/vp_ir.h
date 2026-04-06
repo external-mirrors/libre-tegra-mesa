@@ -155,6 +155,89 @@ struct vp_instr {
    struct vp_scalar_instr scalar;
 };
 
+
+
+
+
+
+enum instr_slot {
+   VEC,
+   SCALAR,
+};
+
+struct gir_src {
+   bool abs, neg;
+   enum vp_swz swz[4];
+};
+
+struct gir_src_attr {
+   struct gir_src src;
+   // relative addr;
+};
+
+struct gir_src_uniform {
+   struct gir_src src;
+   // relative addr;
+};
+
+struct gir_src_tmp {
+   struct gir_src src;
+   int virt_index;
+   int hw_index;
+};
+
+struct gir_dst {
+   int write_mask;
+};
+
+struct gir_shader {
+   struct gir_function *function_list;
+};
+
+struct gir_function {
+   struct list_head link;
+   struct gir_block *block_list;
+};
+
+struct gir_block {
+   struct list_head link;
+   struct gir_instr *instr_list;
+   struct gir_block *successor[2]; // usually 1 but 2 for IF
+   struct gir_block *predecessor;
+};
+
+struct gir_instr {
+   struct list_head link;
+   struct gir_src *src[3];
+   struct gir_dst *dst;
+   // struct predicate;
+};
+
+struct gir_instr_alu {
+   struct gir_instr instr;
+   enum instr_slot slot;
+};
+
+struct gir_instr_alu_vec {
+   struct gir_instr_alu instr;
+   enum vp_vec_op op;
+};
+
+struct gir_instr_alu_scalar {
+   struct gir_instr_alu instr;
+   enum vp_scalar_op op;
+};
+
+struct gir_instr_bundle {
+   struct gir_instr_alu_vec *vec;
+   struct gir_instr_alu_scalar *scalar;
+};
+
+
+
+
+
+
 struct vp_vec_instr
 emit_vNOP(void);
 

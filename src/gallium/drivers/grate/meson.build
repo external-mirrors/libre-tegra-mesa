@@ -39,6 +39,8 @@ files_libgrate = files(
   'vp_nir/pack.c',
   'vp_nir/vp_ir.h',
   'vp_nir/vp_ir.c',
+  'vp_nir/test_ir.c',
+  'vp_nir/test_ir.h',
   'vp_nir/dump_grate_ir.c',
   'vp_nir/grate_compiler_nir.h',
   'vp_nir/grate_compiler_nir.c',

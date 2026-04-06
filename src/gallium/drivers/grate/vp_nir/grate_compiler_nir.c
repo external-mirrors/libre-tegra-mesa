@@ -190,7 +190,7 @@ emit_alu(struct grate_vp_shader *vp, nir_alu_instr *alu)
 	MOV_Sat > mov
    */
 
-   // Saturate Writing
+   // Saturate output if possible
    bool sat = nir_def_all_uses_are_fsat(&alu->def);
 
    // Check if src is powered by alu_instr

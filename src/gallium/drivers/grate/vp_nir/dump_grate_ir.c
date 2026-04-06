@@ -27,7 +27,7 @@ static const char *v_ops[] = {
 	[VP_VEC_OP_STR] = "vSTR",
 	[VP_VEC_OP_SSG] = "vSSG",
 	[VP_VEC_OP_ARR] = "vARR",
-	[VP_VEC_OP_ARA] = "vARA",
+	[VP_VEC_OP_MVA] = "vMVA",
 	[VP_VEC_OP_TXL] = "vTXL",
 	[VP_VEC_OP_PUSHA] = "vPUSHA",
 	[VP_VEC_OP_POPA] = "vPOPA"
@@ -43,7 +43,7 @@ static const char *s_ops[] = {
    [VP_SCALAR_OP_LOG] = "sLOG",
    [VP_SCALAR_OP_LIT] = "sLIT",
    [VP_SCALAR_OP_BRA] = "sBRA",
-   [VP_SCALAR_OP_CAL] = "sCAL",
+   [VP_SCALAR_OP_CLA] = "sCLA",
    [VP_SCALAR_OP_RET] = "sRET",
    [VP_SCALAR_OP_LG2] = "sLG2",
    [VP_SCALAR_OP_EX2] = "sEX2",
@@ -123,7 +123,7 @@ static char *print_v_op(char* tmp, struct vp_vec_instr *vec, enum print_mode mod
 		case VP_VEC_OP_MOV:
 		case VP_VEC_OP_ARL:
 		case VP_VEC_OP_ARR:
-		case VP_VEC_OP_ARA:
+		case VP_VEC_OP_MVA:
 		case VP_VEC_OP_FRC:
 		case VP_VEC_OP_FLR:
 		case VP_VEC_OP_SSG:
