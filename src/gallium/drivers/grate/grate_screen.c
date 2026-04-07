@@ -1,5 +1,6 @@
 #include <stdio.h>
 
+#include "compiler/nir/nir_shader_compiler_options.h"
 #include "drm-uapi/drm_fourcc.h"
 
 #include "util/u_memory.h"
@@ -374,6 +375,38 @@ grate_screen_is_format_supported(struct pipe_screen *pscreen,
    return true;
 }
 
+static const nir_shader_compiler_options nir_compiler_options = {
+   .fuse_ffma32 = true,
+   .fuse_ffma64 = true,
+   .lower_bitops = true,
+   .lower_extract_byte = true,
+   .lower_extract_word = true,
+   .lower_fdiv = true,
+   .lower_fsat = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
+   .lower_fdph = true,
+   .lower_flrp32 = true,
+   .lower_flrp64 = true,
+   .lower_fmod = true,
+   .lower_fpow = true, /* In hardware as of nv40 FS */
+   .lower_uniforms_to_ubo = true,
+   .lower_vector_cmp = true,
+   .force_indirect_unrolling = nir_var_all,
+   .force_indirect_unrolling_sampler = true,
+   .max_unroll_iterations = 32,
+   .no_integers = true,
+};
+
+static const void *
+grate_screen_get_compiler_options(struct pipe_screen *pscreen,
+                                 enum pipe_shader_ir ir,
+                                 enum pipe_shader_type shader)
+{
+   assert(ir == PIPE_SHADER_IR_NIR);
+   return &nir_compiler_options;
+}
+
 static void
 grate_screen_fence_reference(struct pipe_screen *pscreen,
                              struct pipe_fence_handle **ptr,
@@ -472,6 +505,7 @@ grate_screen_create(int fd)
    screen->base.get_screen_fd = grate_screen_get_screen_fd;
    screen->base.context_create = grate_screen_context_create;
    screen->base.is_format_supported = grate_screen_is_format_supported;
+   screen->base.get_compiler_options = grate_screen_get_compiler_options;
    screen->base.query_dmabuf_modifiers = grate_screen_query_dmabuf_modifiers;
    screen->base.is_dmabuf_modifier_supported = grate_screen_is_dmabuf_modifier_supported;
 
