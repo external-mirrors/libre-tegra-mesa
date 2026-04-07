@@ -3,6 +3,7 @@
 
 #include "tgsi/tgsi_parse.h"
 
+#include "util/macros.h"
 #include "util/u_memory.h"
 
 static struct vp_src_operand
@@ -312,7 +313,8 @@ tgsi_to_vp(struct grate_vp_shader *vp, const struct tgsi_full_instruction *inst)
                                    tgsi_src_to_vp(vp, &inst->Src[0].Register)));
 
    default:
-      printf("GRATE VERTEX TGSI UNIMPLEMENTED: 0x%02x\n", inst->Instruction.Opcode);
+      fprintf(stderr, "GRATE VERTEX TGSI UNIMPLEMENTED: 0x%02x\n", inst->Instruction.Opcode);
+      assert(0);
       return 0;
    }
 }
