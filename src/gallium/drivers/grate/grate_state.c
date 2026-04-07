@@ -675,7 +675,7 @@ emit_program(struct grate_context *context)
 void
 grate_emit_state(struct grate_context *context)
 {
-   emit_render_targets(context);
+   //emit_render_targets(context);
    emit_viewport(context);
    emit_guardband(context);
    emit_scissor(context);

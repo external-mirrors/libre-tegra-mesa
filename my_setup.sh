@@ -5,12 +5,6 @@ cd "$(dirname "$0")"
 
 source ./my_common.sh
 
-# gnu2 tlsdesc is broken in binutils
-export CFLAGS="$CFLAGS -mtls-dialect=gnu"
-export CXXFLAGS="$CXXFLAGS -mtls-dialect=gnu"
-
-EXTRA_ARGS=""
-
 meson setup \
 	-Dbuildtype=debug \
 	-Db_ndebug=false \
@@ -28,6 +22,6 @@ meson setup \
 	-Dllvm=disabled \
 	-Degl-native-platform=drm \
 	-Dprefix="${INSTALL_DIR}" \
-	${EXTRA_ARGS} \
+	${EXTRA_SETUP_ARGS} \
 	${@} \
 	"${BUILD_DIR}"
