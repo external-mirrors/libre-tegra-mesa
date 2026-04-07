@@ -435,6 +435,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
    if (buffers & PIPE_CLEAR_COLOR) {
       int i;
       for (i = 0; i < fb->nr_cbufs; ++i) {
+         return;
          struct pipe_surface *dst = fb->cbufs[i];
          if (fill(context->gr2d, grate_resource(dst->texture),
                   pack_color(dst->format, color->f),
