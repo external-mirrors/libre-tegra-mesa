@@ -54,12 +54,12 @@ grate_set_framebuffer_state(struct pipe_context *pcontext,
       rt_params |= TGR3D_VAL(RT_PARAMS, PITCH, res->pitch);
       rt_params |= TGR3D_BOOL(RT_PARAMS, TILED, res->tiled);
 
+      context->framebuffer.num_rts = 1;
       context->framebuffer.rt_params[0] = rt_params;
       context->framebuffer.bos[0] = res->bo;
       mask |= 1;
    } else {
-      context->framebuffer.rt_params[0] = 0;
-      context->framebuffer.bos[0] = NULL;
+      context->framebuffer.num_rts = 0;
    }
 
    pipe_surface_reference(&context->framebuffer.base.zsbuf,
@@ -74,17 +74,17 @@ grate_set_framebuffer_state(struct pipe_context *pcontext,
       rt_params |= TGR3D_VAL(RT_PARAMS, PITCH, res->pitch);
       rt_params |= TGR3D_BOOL(RT_PARAMS, TILED, res->tiled);
 
-      context->framebuffer.rt_params[1 + i] = rt_params;
-      context->framebuffer.bos[1 + i] = res->bo;
-      mask |= 1 << (1 + i);
+      context->framebuffer.rt_params[context->framebuffer.num_rts] = rt_params;
+      context->framebuffer.bos[context->framebuffer.num_rts] = res->bo;
+      mask |= 1 << context->framebuffer.num_rts;
 
-      pipe_surface_reference(&cso->cbufs[i], ref);
+      pipe_surface_reference(&cso->cbufs[context->framebuffer.num_rts], ref);
+      context->framebuffer.num_rts += 1;
    }
 
    for (; i < cso->nr_cbufs; i++)
       pipe_surface_reference(&cso->cbufs[i], NULL);
 
-   context->framebuffer.num_rts = 1 + i;
    context->framebuffer.mask = mask;
 
    context->framebuffer.base.width = framebuffer->width;
