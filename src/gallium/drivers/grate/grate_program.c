@@ -19,7 +19,8 @@
 #include "grate_compiler.h"
 #include "fp/fpir.h"
 #include "vp/vpir.h"
-#include "vp_nir/grate_compiler_nir.h"
+//#include "vp_nir/grate_compiler_nir.h"
+#include "vp_nir_cpp/grate_compiler_nir.h"
 #include "tgr_3d.xml.h"
 
 struct grate_vs_tgsi_transform_context {
@@ -126,7 +127,8 @@ grate_create_vs_state(struct pipe_context *pcontext,
    } else { // NIR path
       printf("NIR path\n");
       assert(template->type == PIPE_SHADER_IR_NIR);
-      nir_main(pcontext, template, &vp);
+      //nir_main(pcontext, template, &vp);
+      nir_main_cpp(pcontext, template, &vp);
    }
    int num_instructions = list_length(&vp.instructions);
    assert(num_instructions < 256);
@@ -145,7 +147,7 @@ grate_create_vs_state(struct pipe_context *pcontext,
    int offset = 2;
    list_for_each_entry(struct vp_instr, instr, &vp.instructions, link) {
       bool end_of_program = instr == last;
-      grate_vp_pack(commands + offset, instr, end_of_program);
+      //grate_vp_pack(commands + offset, instr, end_of_program);
       offset += 4;
    }
 
