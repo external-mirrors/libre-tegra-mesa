@@ -220,7 +220,7 @@ grate_screen_init_caps(struct grate_screen *screen)
    caps->max_gs_invocations = 32;
    caps->max_shader_buffer_size = 1 << 27;
    */
-   
+
    //////////////////////////////////////////////////////////////
 
    // Bool values
@@ -233,7 +233,7 @@ grate_screen_init_caps(struct grate_screen *screen)
    caps->uma = true;
    caps->can_bind_const_buffer_as_vertex = false; // TODO: probably
    caps->allow_mapped_buffers_during_execution = false; // TODO: probably
-   
+
    // well, not quite. but perhaps close enough?
    caps->fragment_shader_texture_lod = true;
    caps->fragment_shader_derivatives = true;
@@ -246,7 +246,7 @@ grate_screen_init_caps(struct grate_screen *screen)
    caps->glsl_feature_level =
    caps->glsl_feature_level_compatibility = 120; // no clue
    caps->essl_feature_level = 100; // no clue
-   caps->constant_buffer_offset_alignment = 4; // DWORD aligned, can do pure data GATHER 
+   caps->constant_buffer_offset_alignment = 4; // DWORD aligned, can do pure data GATHER
    caps->texture_transfer_modes = PIPE_TEXTURE_TRANSFER_BLIT;
    caps->vendor_id = 0x10de;
    caps->device_id = 0xFFFFFFFF;
@@ -272,7 +272,7 @@ grate_screen_init_caps(struct grate_screen *screen)
    caps->min_point_size_aa = 1.0; // no clue
    caps->max_point_size = 8192.0; // no clue
    caps->max_point_size_aa = 8192.0; // no clue
-   caps->point_size_granularity = 
+   caps->point_size_granularity =
    caps->line_width_granularity = 1.0 / 16; // TODO: not a real limit, HW uses floats... but helps caching CSOs
    caps->max_texture_anisotropy = 0; // TODOD: 16.0; // Vendor GL has EXT_texture_filter_anisotropic
    caps->max_texture_lod_bias = 15.0;
@@ -292,16 +292,16 @@ grate_screen_init_shader_caps(struct grate_screen *screen)
    caps = (struct pipe_shader_caps *)&screen->base.shader_caps[MESA_SHADER_VERTEX];
 
    // UInt values
-   caps->max_instructions = 1024;
-   caps->max_alu_instructions = 1024;
+   caps->max_instructions = 256;
+   caps->max_alu_instructions = 256;
    caps->max_tex_instructions = 0;
    caps->max_tex_indirections = 0;
-   caps->max_control_flow_depth = 0;
+   caps->max_control_flow_depth = 8;
    caps->max_inputs = 16;
    caps->max_outputs = 16;
    caps->max_const_buffer0_size = 256 * sizeof(float[4]);
    caps->max_const_buffers = 1;
-   caps->max_temps = 64*4; // 64 vec4s
+   caps->max_temps = 32*4; // 32 vec4s
    caps->max_texture_samplers = 0;
    caps->max_sampler_views = 0;
    caps->max_shader_buffers = 0;
@@ -313,7 +313,7 @@ grate_screen_init_shader_caps(struct grate_screen *screen)
    // Bool values
    caps->cont_supported = false;
    caps->indirect_temp_addr = false; // cannot index attributes, varyings nor GPRs
-   caps->indirect_const_addr = true; // can index constant registers 
+   caps->indirect_const_addr = true; // can index constant registers
    caps->subroutines = false;
    caps->integers = false;
    caps->int64_atomics = false;
@@ -431,28 +431,194 @@ grate_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
 }
 
 static const nir_shader_compiler_options grate_vs_compiler_options = {
-   /*
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
-   .lower_bitops = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
    .lower_fdiv = true,
-   .lower_fsat = true,
-   .lower_insert_byte = true,
-   .lower_insert_word = true,
-   .lower_fdph = true,
+   .lower_ffma16 = false,
+   .lower_ffma32 = false,
+   .lower_ffma64 = false,
+   .fuse_ffma16 = false,
+   .fuse_ffma32 = false,
+   .fuse_ffma64 = false,
+   .lower_flrp16 = true,
    .lower_flrp32 = true,
    .lower_flrp64 = true,
+   .lower_fpow = false,
+   .lower_fsat = false,
+   .lower_fsqrt = true,
+   .lower_sincos = false,
    .lower_fmod = true,
-   .lower_fpow = true,
-   .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
-   .force_indirect_unrolling = nir_var_all,
-   .force_indirect_unrolling_sampler = true,
-   .max_unroll_iterations = 32,
-   */
+   .lower_bitfield_extract8 = true,
+   .lower_bitfield_extract16 = true,
+   .lower_bitfield_extract = true,
+   .lower_bitfield_insert = true,
+   .lower_bitfield_reverse = true,
+   .lower_bit_count = false,
+   .lower_ifind_msb = false,
+   .lower_ufind_msb = false,
+   .lower_find_lsb = false,
+   .lower_uadd_carry = false,
+   .lower_usub_borrow = false,
+   .lower_mul_high = false,
+   .lower_mul_high16 = false,
+   .lower_fneg = false,
+   .lower_ineg = false,
+   .lower_fisnormal = false,
+   .lower_scmp = false,
+   .lower_vector_cmp = false,
+   .lower_bitops = false,
+   .lower_isign = false,
+   .lower_fsign = false,
+   .lower_iabs = false,
+   .lower_umax = false,
+   .lower_umin = false,
+   .lower_fminmax_signed_zero = false,
+   .lower_fdph = false,
+   .fdot_replicates = true,
+   .lower_ffloor = false,
+   .lower_ffract = false,
+   .lower_fceil = true,
+   .lower_ftrunc = false,
+   .lower_fround_even = false,
+   .lower_ldexp = false,
+   .lower_pack_half_2x16 = false,
+   .lower_pack_unorm_2x16 = false,
+   .lower_pack_snorm_2x16 = false,
+   .lower_pack_unorm_4x8 = false,
+   .lower_pack_snorm_4x8 = false,
+   .lower_pack_64_2x32 = false,
+   .lower_pack_64_4x16 = false,
+   .lower_pack_32_2x16 = false,
+   .lower_pack_64_2x32_split = false,
+   .lower_pack_32_2x16_split = false,
+   .lower_unpack_half_2x16 = false,
+   .lower_unpack_unorm_2x16 = false,
+   .lower_unpack_snorm_2x16 = false,
+   .lower_unpack_unorm_4x8 = false,
+   .lower_unpack_snorm_4x8 = false,
+   .lower_unpack_64_2x32_split = false,
+   .lower_unpack_32_2x16_split = false,
+   .lower_pack_split = false,
+   .lower_extract_byte = false,
+   .lower_extract_word = false,
+   .lower_insert_byte = false,
+   .lower_insert_word = false,
+   .vertex_id_zero_based = false,
+   .lower_base_vertex = false,
+   .instance_id_includes_base_index = false,
+   .lower_helper_invocation = false,
+   .optimize_sample_mask_in = false,
+   .optimize_load_front_face_fsign = false,
+   .optimize_quad_vote_to_reduce = false,
+   .lower_cs_local_index_to_id = false,
+   .lower_cs_local_id_to_index = false,
+   .has_cs_global_id = false,
+   .lower_device_index_to_zero = false,
+   .lower_wpos_pntc = false,
+   .lower_hadd = true,
+   .lower_hadd64 = false,
+   .lower_uadd_sat = false,
+   .lower_usub_sat = false,
+   .lower_iadd_sat = false,
+   .lower_mul_32x16 = false,
+   .lower_bfloat16_conversions = false,
+   .has_f2u_sat = false,
+   .has_f2i_sat = false,
+   .vectorize_tess_levels = false,
+   .lower_to_scalar = true,
+   .lower_to_scalar_filter = NULL, // FIX me later
+   .vectorize_vec2_16bit = false,
+   .unify_interfaces = false,
+   .lower_interpolate_at = false,
+   .lower_mul_2x32_64 = false,
+   .has_rotate8 = false,
+   .has_rotate16 = false,
+   .has_rotate32 = false,
+   .has_shfr32 = false,
+   .has_iadd3 = false,
+   .has_amul = false,
+   .has_imul24 = false,
+   .has_umul24 = false,
+   .has_mul24_relaxed = false,
+   //.has_umul_16x16 = false, // Forward compatible
+   .has_imad32 = false,
+   .has_umad24 = false,
+   .has_fused_comp_and_csel = false,
+   .has_icsel_eqz64 = false,
+   .has_icsel_eqz32 = false,
+   .has_icsel_eqz16 = false,
+   .has_fneo_fcmpu = false,
+   .has_ford_funord = false,
+   .has_fsub = false, // could be, but make optimization harder?
+   .has_isub = false,
+   .has_pack_32_4x8 = false,
+   //.has_pixel_coord = false, // Forward compatible
+   .has_texture_scaling = false,
+   .has_sdot_4x8 = false,
+   .has_udot_4x8 = false,
+   .has_sudot_4x8 = false,
+   .has_sdot_4x8_sat = false,
+   .has_udot_4x8_sat = false,
+   .has_sudot_4x8_sat = false,
+   .has_dot_2x16 = false,
+   .has_bfdot2_bfadd = false,
+   .has_fmulz = false,
+   .has_fmulz_no_denorms = false,
+   //.has_fcanonicalize = false, // Forward compatible
+   .has_find_msb_rev = false,
+   .has_pack_half_2x16_rtz = false,
+   .has_bit_test = false,
+   .has_bfe = false,
+   .has_bfm = false,
+   .has_bfi = false,
+   .has_bitfield_select = false,
+   .has_uclz = false,
+   .has_msad = false,
+   .has_f2e4m3fn_satfn = false,
+   .has_load_global_bounded = false,
+   .has_f2i32_rtne = false,
+   .has_atomic_isub = false,
+   .has_atomic_load_store = false,
+   .intel_vec4 = false,
+   .avoid_ternary_with_two_constants = false,
+   .avoid_ternary_with_fabs = false,
+   .support_8bit_alu = false,
+   .support_16bit_alu = false,
+   .max_unroll_iterations = 0,
+   .max_unroll_iterations_aggressive = 0,
+   .max_unroll_iterations_fp64 = 0,
+   .lower_uniforms_to_ubo = false,
+   .force_indirect_unrolling_sampler = false,
    .no_integers = true,
+   .force_indirect_unrolling = (nir_variable_mode)0,
+   .driver_functions = false,
+   .late_lower_int64 = false,
+   .lower_int64_options = (nir_lower_int64_options)~0,
+   .lower_doubles_options = (nir_lower_doubles_options)~0,
+   .divergence_analysis_options = (nir_divergence_options)0,
+   .support_indirect_inputs = BITFIELD_BIT(MESA_SHADER_VERTEX),
+   .support_indirect_outputs = BITFIELD_BIT(MESA_SHADER_VERTEX),
+   //.max_samples = 0, // Forward compatible
+   .lower_fmulz_with_abs_min = true, // ir3 does so
+   .lower_image_offset_to_range_base = false,
+   .lower_atomic_offset_to_range_base = false,
+   .preserve_mediump = false,
+   .lower_fquantize2f16 = false,
+   .force_f2f16_rtz = false,
+   .lower_layer_fs_input_to_sysval = false,
+   .compact_arrays = false,
+   .discard_is_demote = false,
+   .scalarize_ddx = false,
+   //.coarse_ddx = false, // Forward compatible
+   .per_view_unique_driver_locations = false,
+   .compact_view_index = false,
+   .io_options = (nir_io_options)nir_io_has_intrinsics,
+   .skip_lower_packing_ops = 0,
+   .lower_mediump_io = NULL,
+   .varying_expression_max_cost = NULL,
+   .max_varying_expression_cost = 0,
+   .max_offset_shift = NULL,
+   .cb_data = NULL,
+   .max_workgroup_invocations = 0,
+   .max_workgroup_count = {0,0,0},
 };
 
 static const nir_shader_compiler_options grate_fs_compiler_options = {
@@ -518,7 +684,7 @@ grate_screen_create(int fd)
    screen->base.is_format_supported = grate_screen_is_format_supported;
    screen->base.query_dmabuf_modifiers = grate_screen_query_dmabuf_modifiers;
    screen->base.is_dmabuf_modifier_supported = grate_screen_is_dmabuf_modifier_supported;
-   
+
    screen->base.nir_options[MESA_SHADER_VERTEX] = &grate_vs_compiler_options;
    screen->base.nir_options[MESA_SHADER_FRAGMENT] = &grate_fs_compiler_options;
 
