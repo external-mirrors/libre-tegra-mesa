@@ -33,7 +33,7 @@ enum vp_vector_op {
    VP_VEC_OP_STR = 21,
    VP_VEC_OP_SSG = 22,
    VP_VEC_OP_ARR = 23,
-   VP_VEC_OP_ARA = 24,
+   VP_VEC_OP_MVA = 24,
    VP_VEC_OP_TXL = 25,
    VP_VEC_OP_PUSHA = 26,
    VP_VEC_OP_POPA = 27
@@ -64,7 +64,7 @@ static const std::unordered_map<enum vp_vector_op, std::string> v_ops = {
     {VP_VEC_OP_STR, "vSTR"},
     {VP_VEC_OP_SSG, "vSSG"},
     {VP_VEC_OP_ARR, "vARR"},
-    {VP_VEC_OP_ARA, "vARA"},
+    {VP_VEC_OP_MVA, "vMVA"},
     {VP_VEC_OP_TXL, "vTXL"},
     {VP_VEC_OP_PUSHA, "vPUSHA"},
     {VP_VEC_OP_POPA, "vPOPA}"}
@@ -80,13 +80,17 @@ enum vp_scalar_op {
     VP_SCALAR_OP_EXP = 5,
     VP_SCALAR_OP_LOG = 6,
     VP_SCALAR_OP_LIT = 7,
-    VP_SCALAR_OP_BRA = 9,
-    VP_SCALAR_OP_CAL = 11,
+    VP_SCALAR_OP_BRA = 8,
+    VP_SCALAR_OP_BRI = 9,
+    VP_SCALAR_OP_CLA = 10,
+    VP_SCALAR_OP_CLI = 11,
     VP_SCALAR_OP_RET = 12,
     VP_SCALAR_OP_LG2 = 13,
     VP_SCALAR_OP_EX2 = 14,
     VP_SCALAR_OP_SIN = 15,
     VP_SCALAR_OP_COS = 16,
+    VP_SCALAR_OP_BRB = 17,
+    VP_SCALAR_OP_CLB = 18,
     VP_SCALAR_OP_PUSHA = 19,
     VP_SCALAR_OP_POPA = 20
 };
@@ -101,11 +105,17 @@ static const std::unordered_map<enum vp_scalar_op, std::string> s_ops = {
     {VP_SCALAR_OP_LOG, "sLOG"},
     {VP_SCALAR_OP_LIT, "sLIT"},
     {VP_SCALAR_OP_BRA, "sBRA"},
+    {VP_SCALAR_OP_BRI, "sBRI"},
+    {VP_SCALAR_OP_CLA, "sCLA"},
+    {VP_SCALAR_OP_CLI, "sCLI"},
     {VP_SCALAR_OP_RET, "sRET"},
     {VP_SCALAR_OP_LG2, "sLG2"},
     {VP_SCALAR_OP_EX2, "sEX2"},
     {VP_SCALAR_OP_SIN, "sSIN"},
     {VP_SCALAR_OP_COS, "sCOS"},
+    {VP_SCALAR_OP_BRB, "sBRB"},
+    {VP_SCALAR_OP_CLB, "sCLB"},
+    {VP_SCALAR_OP_PUSHA, "sPUSHA"},
     {VP_SCALAR_OP_POPA, "sPOPA"}
 };
 
@@ -132,7 +142,7 @@ enum reg_type {
     REG_TYPE_VIRT_SCALAR_Y,
     REG_TYPE_VIRT_SCALAR_Z,
     REG_TYPE_VIRT_SCALAR_W,
-    NUM_REG_TYPES, 
+    NUM_REG_TYPES,
 };
 
 static const std::unordered_map<enum reg_type, uint8_t> reg_type_store_mask = {
@@ -153,57 +163,164 @@ static const std::unordered_map<enum reg_type, uint8_t> reg_type_store_mask = {
     {REG_TYPE_VIRT_SCALAR_W, 0b1000},
 };
 
-class gir_instruction;
+/*
+* Some Operations need to be done on the Vector pipe, some need to be done on
+* the scalar pipe, s
+*/
+enum ops {
+//
+    OP_NOP, // should NOT appear in the wild. Its detail of scheduling and bundling
+// Dataflow ops; Either pipe
+    OP_MOV,
+    OP_PUSHA,
+    OP_POPA,
+
+// Math ops
+    // Vector pipe
+    VOP_MUL,
+    VOP_ADD,
+    VOP_MAD,
+    VOP_DP3,
+    VOP_DPH,
+    VOP_DP4,
+    VOP_DST,
+    VOP_MIN,
+    VOP_MAX,
+    VOP_FRC,
+    VOP_FLR,
+    VOP_SSG,
+    // Scalar pipe
+    SOP_RCP,
+    SOP_RCC,
+    SOP_RSQ,
+    SOP_EXP,
+    SOP_LOG,
+    SOP_LIT,
+    SOP_LG2,
+    SOP_EX2,
+    SOP_SIN,
+    SOP_COS,
+
+// Bool/Comparison ops
+    // Vector pipe
+    VOP_SFL,
+    VOP_SLT,
+    VOP_SLE,
+    VOP_SEQ,
+    VOP_SGE,
+    VOP_SGT,
+    VOP_STR,
+    VOP_SNE,
+
+// Address Register Write
+    // Vector pipe
+    VOP_ARR,
+    VOP_ARL,
+    VOP_MVA,
+
+// Texture Access
+    // Vector pipe
+    VOP_TXL,
+
+// Branch ops
+    // Scalar Pipe
+    SOP_BRA,
+    SOP_CLA,
+    SOP_BRI,
+    SOP_CLI,
+    SOP_BRB,
+    SOP_CLB,
+    SOP_RET,
+};
+
+class gir_instruction; // fwd dcl
 
 class gir_ssa_def {
-    int virt_id;
+    int virt_id; // unique, assigend once
     gir_instruction *def; // assigning instruction
     unsigned num_uses;
+    unsigned num_components;
 };
 
 class gir_reg {
 public:
     int hw_id;
     reg_type storage_type; // Storage Type // Assigned by reg allocator
+    gir_ssa_def *def;
 };
 
+enum src_type {
+    src_reg,
+    src_attr,
+    src_constant
+};
 class gir_source: public gir_reg {
+    enum src_type type;
     bool abs, neg;
-    
+
     std::array<enum vp_swz, 4> swizzle; // logical/math swizzle
+
+    unsigned addr; // register/attribute/constant address
 };
 
-class gir_source_tmp: public gir_reg {
-    gir_ssa_def *def;
-};
 
-class gir_source_attr: public gir_reg {
-    
+enum dst_type{
+    dst_reg,
+    dst_out,
+    dst_cc
 };
-
-class gir_source_const: public gir_reg {
-    
-};
-
 class gir_dest: public gir_reg {
-    gir_ssa_def *def;
-
+    enum dst_type type;
     bool sat;
     int write_mask; // logical/math mask
-
 };
 
+enum cc_func{
+    FALSE = 0,
+    LT = 1,
+    EQ = 2,
+    LE = 3,
+    GT = 4,
+    NE = 5,
+    GE = 6,
+    TRUE = 7
+};
 class gir_instruction {
 public:
-    int a;
     std::string name;
-    std::vector<std::shared_ptr<gir_source>> src;
+    enum ops op;
+
     // CC
-    std::shared_ptr<gir_dest> dst;
+    std::shared_ptr<gir_dest> dst; // register
+    std::shared_ptr<gir_dest> out; // export/varying
+    std::shared_ptr<gir_dest> cc_dst;
 
+    std::array<std::shared_ptr<gir_source>, 3> src; // 3 source operands
+    std::shared_ptr<gir_source> cc_src;
 
-    virtual void print(std::ostream& os) const  = 0;
+    enum cc_func cc_func;
 
+    gir_instruction(
+        std::shared_ptr<gir_dest> dst,
+        std::shared_ptr<gir_dest> out,
+        std::shared_ptr<gir_dest> cc_dst,
+        std::shared_ptr<gir_source> src0,
+        std::shared_ptr<gir_source> src1,
+        std::shared_ptr<gir_source> src2,
+        std::shared_ptr<gir_source> cc_src,
+        enum cc_func cc_func
+    ):
+        dst(std::move(dst)),
+        out{out},
+        cc_dst{cc_dst},
+        src{src0, src1, src2, },
+        cc_src{cc_src},
+        cc_func{cc_func}
+    {
+
+    };
+
+    virtual void print(std::ostream& os) const = 0;
 };
 
 std::ostream& operator<<(std::ostream& os, gir_instruction& instr) {
@@ -211,12 +328,24 @@ std::ostream& operator<<(std::ostream& os, gir_instruction& instr) {
     return os;
 }
 
+#if 0
+// No one cares about this detail (yet)
 class gir_alu_scalar_instr: public gir_instruction {
 public:
     enum vp_scalar_op op;
 
-    gir_alu_scalar_instr(enum vp_scalar_op op):
-    op{op} {};
+    gir_alu_scalar_instr(
+        enum vp_scalar_op op,
+        std::shared_ptr<gir_dest> dst,
+        std::shared_ptr<gir_dest> out,
+        std::shared_ptr<gir_dest> cc_dst,
+        std::shared_ptr<gir_source> src0,
+        std::shared_ptr<gir_source> src1,
+        std::shared_ptr<gir_source> src2,
+        std::shared_ptr<gir_source> cc_src,
+        enum cc_func cc_func
+    ): gir_instruction{dst, out, cc_dst, src0, src1, src2, cc_src, cc_func}, op{op}
+    {};
 
     void print(std::ostream& os) const override {
         os << s_ops.at(op);
@@ -227,23 +356,26 @@ class gir_alu_vector_instr: public gir_instruction {
 public:
     enum vp_vector_op op;
 
-    gir_alu_vector_instr(enum vp_vector_op op):
-    op{op} {};
+    gir_alu_vector_instr(
+        enum vp_vector_op op,
+        std::shared_ptr<gir_dest> dst,
+        std::shared_ptr<gir_dest> out,
+        std::shared_ptr<gir_dest> cc_dst,
+        std::shared_ptr<gir_source> src0,
+        std::shared_ptr<gir_source> src1,
+        std::shared_ptr<gir_source> src2,
+        std::shared_ptr<gir_source> cc_src,
+        enum cc_func cc_func
+    ): gir_instruction{dst, out, cc_dst, src0, src1, src2, cc_src, cc_func}, op{op}
+    {};
 
     void print(std::ostream& os) const override {
         os << v_ops.at(op);
     }
 };
-
-class gir_alu_vector_bin_instr: public gir_instruction {
-    enum vp_vector_op op;
-    void print(std::ostream& os) const override {
-        os << v_ops.at(op);
-    }
-};
+#endif
 
 class gir_bundle {
-    // Convert to smart pointers
     std::unique_ptr<gir_alu_scalar_instr> scalar;
     std::unique_ptr<gir_alu_vector_instr> vector;
 };
