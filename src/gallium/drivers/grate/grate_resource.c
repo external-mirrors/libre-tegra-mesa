@@ -224,35 +224,30 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
       if (!pot)
          resource->pitch = align(resource->pitch, GRATE_TEXTURE_PITCH_ALIGN);
 
-      /*
-       * The sampler addresses rows within the power-of-two extent enclosing
-       * the height, not just the visible ones, and reading past the end of
-       * the object faults the SMMU (tegra-mc reports texsrd2 page faults).
-       * Back those rows with memory; the descriptor still describes the
-       * visible size. This applies to a scanout buffer too, since the
-       * compositor samples its own output.
-       */
       bool scanout = template->bind & (PIPE_BIND_SCANOUT |
                                        PIPE_BIND_DISPLAY_TARGET);
 
+      /*
+       * The sampler addresses rows within the power-of-two extent enclosing
+       * the height, not just the visible ones, and reading past the end of
+       * the object faults the SMMU - tegra-mc reports texsrd2 page faults.
+       * Back those rows with memory; the descriptor still describes the
+       * visible size.
+       *
+       * A scanned out buffer is left alone: the display reads exactly the
+       * rows it was told about, and padding only confuses anything that
+       * samples it.
+       */
       if ((template->bind & PIPE_BIND_SAMPLER_VIEW) && !scanout)
          height = util_next_power_of_two(height);
 
       /*
-       * BOTTOM_UP only for a target that is not sampled: it matches GL's
-       * bottom left origin, but on a texture uploaded top down it flips it.
+       * BOTTOM_UP matches GL's bottom left origin, which suits a target
+       * nobody samples. A texture is uploaded top down, so flipping it would
+       * stand the image on its head, and a scanout buffer gets its flip
+       * handled in the viewport instead (see emit_viewport).
        */
-      /*
-       * BOTTOM_UP matches GL's bottom left origin, which is what a scanout
-       * buffer and a plain render target want. A sampled texture is uploaded
-       * top down, so flipping it would stand the image on its head - unless
-       * it is also being scanned out, where the display wins.
-       *
-       * It also means the image ends at the last allocated row, so a scanned
-       * out buffer must not have its height padded: the padding would push
-       * the visible rows off the top.
-       */
-      if (scanout || !(template->bind & PIPE_BIND_SAMPLER_VIEW))
+      if (!(template->bind & PIPE_BIND_SAMPLER_VIEW))
          flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
    }
 
