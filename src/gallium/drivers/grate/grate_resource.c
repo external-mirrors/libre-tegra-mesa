@@ -5,6 +5,7 @@
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/u_surface.h"
 #include "util/u_pack_color.h"
 #include "util/u_transfer.h"
 #include "util/u_inlines.h"
@@ -346,7 +347,14 @@ grate_resource_copy_region(struct pipe_context *pcontext,
                            unsigned int src_level,
                            const struct pipe_box *box)
 {
-   grate_unimplemented();
+   /*
+    * This was a silent no-op, so anything built on a resource copy - which
+    * includes a compositor capturing its own output - quietly kept whatever
+    * the destination happened to contain. Go through the CPU helper: it maps
+    * both resources, which now waits for the GPU, so it is correct if slow.
+    */
+   util_resource_copy_region(pcontext, dst, dst_level, dstx, dsty, dstz,
+                             src, src_level, box);
 }
 
 static void
