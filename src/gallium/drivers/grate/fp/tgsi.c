@@ -29,6 +29,30 @@ fp_alu_src_reg(int index)
    return src;
 }
 
+
+/*
+ * Scalar temporaries. Registers 16..23 are the global file; r0..r3 carry
+ * varyings, TEX results and the colour output, and r4 holds 1/w for the
+ * barycentric setup, so r5..r15 are free to spill into.
+ */
+#define GRATE_FP_NUM_GLOBALS 8
+#define GRATE_FP_SPILL_FIRST 5
+#define GRATE_FP_SPILL_COUNT 11
+
+static unsigned
+fp_temp_reg(unsigned slot)
+{
+   if (slot < GRATE_FP_NUM_GLOBALS)
+      return 16 + slot;
+
+   slot -= GRATE_FP_NUM_GLOBALS;
+   if (slot < GRATE_FP_SPILL_COUNT)
+      return GRATE_FP_SPILL_FIRST + slot;
+
+   fprintf(stderr, "GRATE FRAG: out of temporary registers\n");
+   return 16;
+}
+
 static struct fp_alu_src_operand
 fp_alu_src_zero()
 {
@@ -143,16 +167,43 @@ fp_alu_src_tgsi(struct fp_emit_ctx *ctx, const struct tgsi_src_register *src,
       break;
    }
 
+   case TGSI_FILE_CONSTANT: {
+      /* uniform registers occupy 32..63, one scalar each */
+      unsigned slot = src->Index * 4 + comp;
+      if (slot >= GRATE_FP_NUM_UNIFORMS) {
+         fprintf(stderr, "GRATE FRAG: uniform slot %u past the %u the hardware "
+                         "has\n", slot, GRATE_FP_NUM_UNIFORMS);
+         op = fp_alu_src_zero();
+         break;
+      }
+      struct fp_alu_src_operand u = {
+         .index = GRATE_FP_UNIFORM_BASE + slot,
+         .datatype = FP_DATATYPE_FP20,
+      };
+      op = u;
+      break;
+   }
+
    case TGSI_FILE_TEMPORARY:
-      if ((int)src->Index == ctx->fp->tex_temp)
+      if ((int)src->Index == ctx->fp->tex_temp) {
          op = fp_alu_src_tex_result(comp);
-      else
-         op = fp_alu_src_reg(src->Index * 4 + comp);
+      } else {
+         struct fp_alu_src_operand t = {
+            .index = fp_temp_reg(src->Index * 4 + comp),
+            .datatype = FP_DATATYPE_FP20,
+         };
+         op = t;
+      }
       break;
 
-   default:
-      op = fp_alu_src_reg(src->Index * 4 + comp);
+   default: {
+      struct fp_alu_src_operand t = {
+         .index = fp_temp_reg(src->Index * 4 + comp),
+         .datatype = FP_DATATYPE_FP20,
+      };
+      op = t;
       break;
+   }
    }
 
    if (src->Negate)
@@ -194,8 +245,12 @@ fp_alu_dst(const struct tgsi_dst_register *dst, int subreg, bool saturate)
       ret.index += o / 2;
       ret.write_low_sub_reg = (o % 2) == 0;
       ret.write_high_sub_reg = (o % 2) != 0;
-   } else
-      ret.index += subreg;
+   } else {
+      ret.index = fp_temp_reg(dst->Index * 4 + subreg);
+      /* a temporary holds one fp20, so enable both subregister halves */
+      ret.write_low_sub_reg = true;
+      ret.write_high_sub_reg = true;
+   }
 
    ret.saturate = saturate;
 
@@ -213,11 +268,23 @@ enum fp_src_form {
    FP_FORM_ADD,   /* s0 * 1 + s1     */
    FP_FORM_MAD,   /* s0 * s1 + s2    */
    FP_FORM_SUB,   /* s0 * 1 + (-s1)  */
+   FP_FORM_SUB_REV, /* s1 * 1 + (-s0) */
 };
+
+static void
+emit_alu_cond(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
+              enum fp_alu_op op, enum fp_src_form form, enum fp_condition cond);
 
 static void
 emit_alu(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
          enum fp_alu_op op, enum fp_src_form form)
+{
+   emit_alu_cond(fp, tinst, op, form, FP_CONDITION_ALWAYS);
+}
+
+static void
+emit_alu_cond(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
+              enum fp_alu_op op, enum fp_src_form form, enum fp_condition cond)
 {
    const struct tgsi_dst_register *dst = &tinst->Dst[0].Register;
    bool saturate = tinst->Instruction.Saturate != 0;
@@ -257,11 +324,14 @@ emit_alu(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
       case FP_FORM_MAD: rA = s[0]; rB = s[1];              rC = s[2];              break;
       case FP_FORM_SUB: rA = s[0]; rB = fp_alu_src_one();  rC = s[1];
                         rC.negate = !rC.negate;                                    break;
+      case FP_FORM_SUB_REV: rA = s[1]; rB = fp_alu_src_one(); rC = s[0];
+                        rC.negate = !rC.negate;                                    break;
       default:          UNREACHABLE("bad fp source form");
       }
 
       struct fp_alu_instr a = {
          .op = op,
+         .condition = cond,
          .dst = fp_alu_dst(dst, i, saturate),
          /* src[3] mirrors src[2] so the rD selector is stable and stays off */
          .src = { rA, rB, rC, rC },
@@ -339,6 +409,48 @@ emit_tex(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
    struct fp_instr *inst = CALLOC_STRUCT(fp_instr);
    list_inithead(&inst->link);
 
+   /*
+    * TEX always reads S/T from row registers 0 and 1. A varying lands there
+    * via the MFU; anything else has to be moved there by an ALU packet in a
+    * preceding pipeline instruction.
+    */
+   if (coord->File != TGSI_FILE_INPUT) {
+      struct fp_instr *setup = CALLOC_STRUCT(fp_instr);
+      list_inithead(&setup->link);
+
+      struct fp_emit_ctx sctx = { .fp = fp, .mfu = NULL, .num_constants = 0 };
+      const int sw[4] = { coord->SwizzleX, coord->SwizzleY,
+                          coord->SwizzleZ, coord->SwizzleW };
+
+      struct fp_alu_instr_packet *pkt = CALLOC_STRUCT(fp_alu_instr_packet);
+      list_inithead(&pkt->link);
+
+      for (int c = 0; c < 2; ++c) {
+         struct fp_alu_src_operand src = fp_alu_src_tgsi(&sctx, coord, sw[c]);
+         struct fp_alu_dst_operand d = {
+            .index = c,                 /* row register 0 / 1 */
+            .write_low_sub_reg = true,
+            .write_high_sub_reg = true,
+         };
+         struct fp_alu_instr a = {
+            .op = FP_ALU_OP_MAD,
+            .dst = d,
+            .src = { src, fp_alu_src_one(), fp_alu_src_zero(), fp_alu_src_zero() },
+         };
+         pkt->slots[c] = a;
+      }
+
+      if (sctx.num_constants > 0) {
+         pkt->has_constants = true;
+         memcpy(pkt->constants, sctx.constants, sizeof(pkt->constants));
+      }
+
+      setup->alu_sched.address = list_length(&fp->alu_instructions);
+      setup->alu_sched.num_instructions = 1;
+      list_addtail(&pkt->link, &fp->alu_instructions);
+      list_addtail(&setup->link, &fp->fp_instructions);
+   }
+
    if (coord->File == TGSI_FILE_INPUT) {
       struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
       list_inithead(&mfu->link);
@@ -354,8 +466,6 @@ emit_tex(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
       inst->mfu_sched.address = list_length(&fp->mfu_instructions);
       inst->mfu_sched.num_instructions = 1;
       list_addtail(&mfu->link, &fp->mfu_instructions);
-   } else {
-      fprintf(stderr, "GRATE FRAG: TEX coordinates must come from a varying\n");
    }
 
    inst->tex.enable = true;
@@ -396,6 +506,19 @@ emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *
       break;
    case TGSI_OPCODE_MAX:
       emit_alu(fp, inst, FP_ALU_OP_MAX, FP_FORM_ADD);
+      break;
+   case TGSI_OPCODE_SLT:
+      /* (a < b) == (b - a > 0); the condition code turns the result into 0/1 */
+      emit_alu_cond(fp, inst, FP_ALU_OP_MAD, FP_FORM_SUB_REV,
+                    FP_CONDITION_GREATER);
+      break;
+   case TGSI_OPCODE_SGE:
+      emit_alu_cond(fp, inst, FP_ALU_OP_MAD, FP_FORM_SUB_REV,
+                    FP_CONDITION_GEQUAL);
+      break;
+   case TGSI_OPCODE_CMP:
+      /* CSEL is (rA < 0) ? rB : rC * rD, which is exactly TGSI CMP */
+      emit_alu(fp, inst, FP_ALU_OP_CSEL, FP_FORM_MAD);
       break;
    case TGSI_OPCODE_TEX:
       emit_tex(fp, inst);

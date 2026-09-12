@@ -10,6 +10,7 @@
 #include "util/u_memory.h"
 #include "util/u_framebuffer.h"
 
+#include "fp/fpir.h"
 #include "grate_common.h"
 #include "grate_context.h"
 #include "grate_program.h"
@@ -707,6 +708,13 @@ emit_textures(struct grate_context *context, uint32_t **ptrp)
          hi |= GRATE_TEXDESC_HI_NOT_POW2;
          hi |= TGR3D_TEX_TEXDESC_HI_WIDTH(width);
          hi |= TGR3D_TEX_TEXDESC_HI_HEIGHT(height);
+
+         /*
+          * FIXME: the last rows of a non-power-of-two texture sample as zero
+          * (tests/fptest tex_npot, a 5x3 texture). Programming NPOT_AUX with
+          * the enclosing power-of-two extent does not help, so the sampler
+          * wants something else here that is not documented.
+          */
       }
 
       if (grate_debug & GRATE_DEBUG_TRACE)
@@ -769,6 +777,34 @@ emit_vs_uniforms(struct grate_context *context, uint32_t **ptrp)
    }
 }
 
+/*
+ * Fragment uniforms live in ALU register file slots 32..63, one scalar each,
+ * and are uploaded as fp20 through REG_TGR3D_ALU_GLOBALS.
+ */
+static void
+emit_fs_uniforms(struct grate_context *context, uint32_t **ptrp)
+{
+   struct grate_stream *stream = &context->gr3d->stream;
+   struct pipe_constant_buffer *constbuf =
+      &context->constant_buffer[MESA_SHADER_FRAGMENT];
+   uint32_t values[GRATE_FP_NUM_UNIFORMS];
+   unsigned num;
+
+   if (constbuf->user_buffer == NULL)
+      return;
+
+   num = MIN2(constbuf->buffer_size / sizeof(float), GRATE_FP_NUM_UNIFORMS);
+   if (num == 0)
+      return;
+
+   const float *src = constbuf->user_buffer;
+   for (unsigned i = 0; i < num; ++i)
+      values[i] = grate_fp20_from_float(src[i]);
+
+   GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_ALU_GLOBALS(0), num));
+   grate_stream_push_words(stream, ptrp, values, num, 0);
+}
+
 static void
 emit_shader(struct grate_stream *stream, uint32_t **ptrp, struct grate_shader_blob *blob)
 {
@@ -823,6 +859,7 @@ grate_emit_state(struct grate_context *context, uint32_t **ptrp)
    emit_zsa_state(context, ptrp);
    emit_attribs(context, ptrp);
    emit_vs_uniforms(context, ptrp);
+   emit_fs_uniforms(context, ptrp);
    emit_textures(context, ptrp);
    emit_program(context, ptrp);
 }

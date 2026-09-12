@@ -180,8 +180,8 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
    height = template->height0;
 
    resource->tiled = 0;
-   if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW |
-                         PIPE_BIND_SCANOUT | PIPE_BIND_DEPTH_STENCIL)) {
+   if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
+                         PIPE_BIND_DEPTH_STENCIL)) {
       if (template->bind & PIPE_BIND_DEPTH_STENCIL)
          resource->pitch = align(resource->pitch, 256);
       else
@@ -189,6 +189,11 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
 
       flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
    }
+   /*
+    * A texture descriptor carries no pitch, so the sampler derives the row
+    * stride from the width. Padding the pitch of a sample-only resource
+    * therefore shears the image; leave it at width * blocksize.
+    */
 
    if (template->target != PIPE_BUFFER) {
       /* pick pixel-format */

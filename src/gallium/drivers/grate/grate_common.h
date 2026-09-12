@@ -60,4 +60,8 @@
 /* libgrate calls this NOT_POW2_DIMENSIONS; absent from our register header */
 #define GRATE_TEXDESC_HI_NOT_POW2 0x00000040
 
+/* fragment uniform registers: file indices 32..63, uploaded via ALU_GLOBALS */
+#define GRATE_FP_UNIFORM_BASE  32
+#define GRATE_FP_NUM_UNIFORMS  32
+
 #endif // GRATE_COMMON_H
