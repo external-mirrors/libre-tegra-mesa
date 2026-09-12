@@ -14,6 +14,9 @@ static GLuint sh(GLenum t,const char*s){GLuint x=glCreateShader(t);glShaderSourc
  GLint ok=0;glGetShaderiv(x,GL_COMPILE_STATUS,&ok);if(!ok){char l[512];glGetShaderInfoLog(x,511,NULL,l);printf("compile %s\n",l);}return x;}
 int main(int argc,char**argv){
   setbuf(stdout,NULL);
+  /* Mesa built with the x11 platform makes EGL_DEFAULT_DISPLAY mean X11,
+   * which is not there over ssh. Ask for surfaceless unless told otherwise. */
+  setenv("EGL_PLATFORM", "surfaceless", 0);
   int W = argc>1?atoi(argv[1]):300, H = argc>2?atoi(argv[2]):200;
   EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);eglInitialize(d,0,0);eglBindAPI(EGL_OPENGL_ES_API);
   EGLint ca[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,
@@ -31,7 +34,7 @@ int main(int argc,char**argv){
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
   glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
   glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
-  if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){printf("FBO incomplete\n");return 1;}
+  {GLenum st=glCheckFramebufferStatus(GL_FRAMEBUFFER); if(st!=GL_FRAMEBUFFER_COMPLETE){printf("FBO incomplete status=0x%04x glerr=0x%04x\n",st,glGetError());return 1;}}
 
   GLuint p=glCreateProgram();glAttachShader(p,sh(GL_VERTEX_SHADER,vs));glAttachShader(p,sh(GL_FRAGMENT_SHADER,fs));
   glBindAttribLocation(p,0,"pos");glLinkProgram(p);glUseProgram(p);

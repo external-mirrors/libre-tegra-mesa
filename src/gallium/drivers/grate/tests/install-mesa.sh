@@ -5,7 +5,7 @@
 set -eu
 S=/home/sam/Dev/stage-main
 ninja -C /home/sam/Dev/mesa/build-grate install >/dev/null
-for f in libEGL.so.1.0.0 libGLESv2.so.2.0.0 libGLESv1_CM.so.1.1.0 \
+for f in libEGL.so.1.0.0 libGLESv2.so.2.0.0 libGLESv1_CM.so.1.1.0 libGL.so.1.2.0 \
          libgbm.so.1.0.0 libgallium-26.3.0-devel.so; do
     echo samuca | sudo -S cp -f "$S/lib/$f" "/usr/lib/$f" 2>/dev/null
 done

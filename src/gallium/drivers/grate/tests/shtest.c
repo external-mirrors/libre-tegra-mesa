@@ -1,5 +1,6 @@
 /* shtest "<fragment shader body>" - renders a full-viewport tri, prints centre pixel */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -11,6 +12,9 @@ static GLuint sh(GLenum t,const char *s){GLuint x=glCreateShader(t);glShaderSour
   if(!ok){char l[512];glGetShaderInfoLog(x,511,NULL,l);printf("COMPILE_FAIL %s\n",l);return 0;}return x;}
 int main(int argc,char**argv){
   setbuf(stdout,NULL);
+  /* Mesa built with the x11 platform makes EGL_DEFAULT_DISPLAY mean X11,
+   * which is not there over ssh. Ask for surfaceless unless told otherwise. */
+  setenv("EGL_PLATFORM", "surfaceless", 0);
   if(argc<2){printf("usage: shtest <fs body>\n");return 1;}
   char fs[4096];
   snprintf(fs,sizeof(fs),"precision mediump float;\nvarying vec4 v;\n%s\n",argv[1]);

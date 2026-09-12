@@ -23,6 +23,8 @@
  * of some abstraction to handle handles in a Tegra-specific winsys
  * implementation.
  */
+#include "drm-uapi/drm_fourcc.h"
+
 #include "frontend/drm_driver.h"
 
 
@@ -61,7 +63,63 @@ grate_resource_get_handle(struct pipe_screen *pscreen,
    }
 
    handle->stride = resource->pitch;
+   handle->offset = 0;
+   handle->modifier = DRM_FORMAT_MOD_LINEAR;
    return true;
+}
+
+/*
+ * DRI3 and the dmabuf export path ask for the layout through this rather than
+ * through get_handle, and without it they end up passing DRM_FORMAT_MOD_INVALID
+ * to the X server, which answers BadAlloc. We only ever hand out single plane
+ * linear buffers, so the answers are all short.
+ */
+static bool
+grate_resource_get_param(struct pipe_screen *pscreen,
+                         struct pipe_context *pcontext,
+                         struct pipe_resource *presource,
+                         unsigned plane, unsigned layer, unsigned level,
+                         enum pipe_resource_param param,
+                         unsigned usage, uint64_t *value)
+{
+   struct grate_resource *resource = grate_resource(presource);
+   struct winsys_handle handle;
+
+   switch (param) {
+   case PIPE_RESOURCE_PARAM_NPLANES:
+      *value = 1;
+      return true;
+   case PIPE_RESOURCE_PARAM_STRIDE:
+      *value = resource->pitch;
+      return true;
+   case PIPE_RESOURCE_PARAM_OFFSET:
+      *value = 0;
+      return true;
+   case PIPE_RESOURCE_PARAM_MODIFIER:
+      *value = DRM_FORMAT_MOD_LINEAR;
+      return true;
+   case PIPE_RESOURCE_PARAM_LAYER_STRIDE:
+      *value = (uint64_t)resource->pitch * presource->height0;
+      return true;
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED:
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS:
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD:
+      memset(&handle, 0, sizeof(handle));
+      if (param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD)
+         handle.type = WINSYS_HANDLE_TYPE_FD;
+      else if (param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS)
+         handle.type = WINSYS_HANDLE_TYPE_KMS;
+      else
+         handle.type = WINSYS_HANDLE_TYPE_SHARED;
+
+      if (!grate_resource_get_handle(pscreen, pcontext, presource, &handle, usage))
+         return false;
+
+      *value = handle.handle;
+      return true;
+   default:
+      return false;
+   }
 }
 
 static void
@@ -299,7 +357,9 @@ grate_screen_resource_from_handle(struct pipe_screen *pscreen,
    case WINSYS_HANDLE_TYPE_FD:
       resource->bo = grate_bo_import(screen->drm, handle->handle);
       if (!resource->bo) {
-         fprintf(stderr, "grate_bo_import() failed\n");
+         fprintf(stderr, "grate_bo_import() failed for %ux%u fmt=%s stride=%u\n",
+                 template->width0, template->height0,
+                 util_format_short_name(template->format), handle->stride);
          goto fail;
       }
       break;
@@ -334,6 +394,7 @@ grate_screen_resource_init(struct pipe_screen *pscreen)
    pscreen->resource_create = grate_screen_resource_create;
    pscreen->resource_from_handle = grate_screen_resource_from_handle;
    pscreen->resource_get_handle = grate_resource_get_handle;
+   pscreen->resource_get_param = grate_resource_get_param;
    pscreen->resource_destroy = grate_resource_destroy;
 }
 

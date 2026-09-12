@@ -1,6 +1,7 @@
 /* Textured quad with interleaved pos+uv attributes and two triangles,
  * which is how weston's gl-renderer submits surfaces. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 static const char *vs =
@@ -13,6 +14,9 @@ static GLuint sh(GLenum ty,const char*s){GLuint x=glCreateShader(ty);glShaderSou
   GLint ok=0;glGetShaderiv(x,GL_COMPILE_STATUS,&ok);if(!ok){char l[512];glGetShaderInfoLog(x,511,NULL,l);printf("compile fail %s\n",l);}return x;}
 int main(void){
   setbuf(stdout,NULL);
+  /* Mesa built with the x11 platform makes EGL_DEFAULT_DISPLAY mean X11,
+   * which is not there over ssh. Ask for surfaceless unless told otherwise. */
+  setenv("EGL_PLATFORM", "surfaceless", 0);
   EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);eglInitialize(d,0,0);eglBindAPI(EGL_OPENGL_ES_API);
   EGLint ca[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,
                EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE};

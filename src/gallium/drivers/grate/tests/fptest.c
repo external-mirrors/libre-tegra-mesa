@@ -73,6 +73,9 @@ static GLuint compile(GLenum type, const char *src, char *log, size_t logsz)
 
 int main(void)
 {
+  /* Mesa built with the x11 platform makes EGL_DEFAULT_DISPLAY mean X11,
+   * which is not there over ssh. Ask for surfaceless unless told otherwise. */
+  setenv("EGL_PLATFORM", "surfaceless", 0);
    setbuf(stdout, NULL);
    EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    EGLint maj, min;

@@ -9,6 +9,9 @@ static const char *fs="precision mediump float;varying vec2 p;void main(){gl_Fra
 static GLuint sh(GLenum t,const char*s){GLuint x=glCreateShader(t);glShaderSource(x,1,&s,NULL);glCompileShader(x);return x;}
 int main(void){
   setbuf(stdout,NULL);
+  /* Mesa built with the x11 platform makes EGL_DEFAULT_DISPLAY mean X11,
+   * which is not there over ssh. Ask for surfaceless unless told otherwise. */
+  setenv("EGL_PLATFORM", "surfaceless", 0);
   int W=256,H=256;
   EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);eglInitialize(d,0,0);eglBindAPI(EGL_OPENGL_ES_API);
   EGLint ca[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,

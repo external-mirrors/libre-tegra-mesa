@@ -245,21 +245,22 @@ int grate_bo_export(struct grate_bo *bo, uint32_t flags)
     return fd;
 }
 
+/*
+ * The size of a dma-buf is discovered by seeking to its end. Note that
+ * dma_buf_llseek() in the kernel only honours SEEK_END and SEEK_SET and
+ * answers EINVAL to anything else, so the usual save-the-offset-with-SEEK_CUR
+ * dance fails on the very first call and takes every dmabuf import down with
+ * it. Seek to the end, then rewind to a known good zero.
+ */
 static ssize_t fd_get_size(int fd)
 {
-    ssize_t size, offset;
-    int err;
-
-    offset = lseek(fd, 0, SEEK_CUR);
-    if (offset < 0)
-        return -errno;
+    ssize_t size;
 
     size = lseek(fd, 0, SEEK_END);
     if (size < 0)
         return -errno;
 
-    err = lseek(fd, offset, SEEK_SET);
-    if (err < 0)
+    if (lseek(fd, 0, SEEK_SET) < 0)
         return -errno;
 
     return size;
@@ -277,6 +278,8 @@ grate_bo_import(struct grate_device *drm, int fd)
 
    err = drmPrimeFDToHandle(drm->fd, fd, &gem_handle);
    if (err < 0) {
+      fprintf(stderr, "grate: drmPrimeFDToHandle(fd=%d) failed: %d (%s)\n",
+              fd, err, strerror(errno));
       VDBG_DRM(drm, "failed err %d strerror(%s)\n", err, strerror(-err));
       pthread_mutex_unlock(&drm->bo_map_lock);
       return NULL;
@@ -286,8 +289,11 @@ grate_bo_import(struct grate_device *drm, int fd)
 
    if (!bo->size) {
       size = fd_get_size(fd);
-      if (size < 0)
+      if (size < 0) {
+         fprintf(stderr, "grate: fd_get_size(fd=%d) failed: %zd (%s)\n",
+                 fd, size, strerror((int)-size));
          goto error;
+      }
    
       bo->drm = drm;
       bo->size = (uint32_t) size;
