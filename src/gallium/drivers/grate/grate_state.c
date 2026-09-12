@@ -746,25 +746,8 @@ static void
 emit_viewport(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
-   uint32_t vp[10];
 
-   memcpy(vp, context->viewport, sizeof(vp));
-
-   /*
-    * Mesa flips the viewport for a window system framebuffer by handing over
-    * a negative Y scale, because it assumes GL's bottom left origin. This
-    * hardware rasterises top down, so for a buffer that is scanned out the
-    * flip has to be taken back off or the display shows the frame upside
-    * down. An offscreen target is unaffected: it is read back through GL,
-    * where the flip is what makes it come out the right way up.
-    */
-   if (context->framebuffer.scanout) {
-      float sy = u_bitcast_u2f(vp[5]);
-      if (sy < 0.0f)
-         vp[5] = u_bitcast_f2u(-sy);
-   }
-
-   grate_stream_push_words(stream, ptrp, vp, 10, 0);
+   grate_stream_push_words(stream, ptrp, context->viewport, 10, 0);
 }
 
 static void

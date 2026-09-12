@@ -104,8 +104,12 @@ int main(int argc, char **argv)
          glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, fb);
          int badrow = -1;
          for (int y = 0; y < H && badrow < 0; y++) {
-            int sy = H - 1 - y;                    /* readpixels row 0 is the bottom */
-            int wg = (int)((sy + 0.5) / H * 255.0 + 0.5);
+            /*
+             * glReadPixels is bottom up: its row 0 is the bottom of the
+             * viewport, where the gradient's green is smallest. That is the
+             * opposite of the scanout buffer checked below, which is top down.
+             */
+            int wg = (int)((y + 0.5) / H * 255.0 + 0.5);
             for (int x = 0; x < W; x += 89) {
                int wr = (int)((x + 0.5) / W * 255.0 + 0.5);
                unsigned char *px = fb + ((size_t)y * W + x) * 4;
@@ -136,13 +140,15 @@ int main(int argc, char **argv)
    printf("mapped stride=%u\n", stride);
 
    /*
-    * The scanout buffer is top down, so row 0 is the top of the screen, where
-    * the gradient's green is smallest.
+    * The shader writes green = p.y, and p.y is 0 at NDC y = -1, which GL puts
+    * at the BOTTOM of the viewport. A scanout buffer is stored top down, so
+    * row 0 is the top of the screen and must hold the LARGEST green. Getting
+    * this backwards is exactly how an upside down display passes a test.
     */
    int bad = -1; int firstbadrow = -1;
    for (int y = 0; y < H; y++) {
       const unsigned char *row = (const unsigned char *)ptr + (size_t)y * stride;
-      int wantg = (int)((y + 0.5) / H * 255.0 + 0.5);
+      int wantg = (int)(((H - 1 - y) + 0.5) / H * 255.0 + 0.5);
       for (int x = 0; x < W; x += 97) {
          int wantr = (int)((x + 0.5) / W * 255.0 + 0.5);
          int r = row[x*4+2], g = row[x*4+1];   /* XRGB8888 little endian: B,G,R,X */
@@ -158,7 +164,7 @@ int main(int argc, char **argv)
       printf("RESULT: first wrong row %d of %d (x=%d got %u,%u want ~%u,%u)\n",
              firstbadrow, H, bad, row[bad*4+2], row[bad*4+1],
              (unsigned)((bad + 0.5) / W * 255.0 + 0.5),
-             (unsigned)((firstbadrow + 0.5) / H * 255.0 + 0.5));
+             (unsigned)(((H - 1 - firstbadrow) + 0.5) / H * 255.0 + 0.5));
    }
 
    gbm_bo_unmap(bo, mapdata);
