@@ -42,10 +42,12 @@ mismatch.
 
 ## Running weston
 
-    apk add weston weston-backend-drm weston-xwayland xwayland seatd
-    rc-service seatd start           # or: systemctl start seatd
+    apk add weston weston-backend-drm seatd
+    seatd -g video &                 # weston needs a seat to open the DRM device
 
     weston --backend=drm --renderer=gl
+
+Do NOT pass `--xwayland` yet. See below.
 
 Over ssh, weston needs a seat to open the DRM device; `LIBSEAT_BACKEND=seatd`
 with seatd running is the least painful way to get one.
@@ -56,6 +58,16 @@ OpenGL ES 2.0 on the GPU, glxgears at ~34fps on the panel through Xwayland,
 and weston compositing its own clients. See ../tests/README.md for the test
 suites and what they cover.
 
-X clients drawn through glamor still come out wrong: glamor's shaders use
-fragment opcodes the driver does not implement yet (FLR, FRC, RCP) and
-overflow its 19 scalar temporaries. Wayland clients are unaffected.
+**Do not enable Xwayland.** glamor's shaders use fragment opcodes the driver
+does not implement (FLR, FRC, RCP) and overflow its 19 scalar temporaries. The
+register allocator falls back to a wrong register rather than failing the
+compile, so a malformed program reaches the GPU, hangs it, and the kernel then
+resets gr3d in a loop:
+
+    [drm] tegra_drm_sched_timedout_job: 3d channel: pipes 0x2 (process:glxgears)
+    tegra-gr3d 54180000.gr3d: [drm:tegra_drm_sched_timedout_job] resetting hardware
+
+On a Tegra 3 that takes the whole machine down - running glxgears under
+Xwayland reboots the device. Wayland clients are unaffected and stable. libGL,
+GLX and the DRI3 buffer sharing all work; it is only glamor's shaders that are
+beyond the fragment compiler today.
