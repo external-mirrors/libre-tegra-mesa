@@ -134,10 +134,20 @@ struct fp_mfu_instr {
    struct fp_var_instr var[4];
 };
 
+/*
+ * An ALU packet holds 4 scalar slots. The fourth can instead carry up to three
+ * embedded fp20 constants, which the instructions address as registers 28..30
+ * (docs/fragment-shader-isa.md, "ALU embedded constants").
+ */
 struct fp_alu_instr_packet {
    struct list_head link;
    struct fp_alu_instr slots[4];
+   bool has_constants;
+   uint32_t constants[3];   /* fp20-encoded */
 };
+
+uint32_t grate_fp20_from_float(float f);
+void grate_fp_pack_alu_constants(uint32_t *dst, const uint32_t *constants);
 
 struct fp_sched {
    int num_instructions;

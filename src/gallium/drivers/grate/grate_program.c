@@ -266,7 +266,11 @@ grate_create_fs_state(struct pipe_context *pcontext,
    list_for_each_entry(struct fp_alu_instr_packet, instr, &fp.alu_instructions, link) {
       for (int i = 0; i < 4; ++i) {
          uint32_t words[2];
-         grate_fp_pack_alu(words, instr->slots + i);
+         /* the fourth slot carries embedded constants when the packet needs them */
+         if (i == 3 && instr->has_constants)
+            grate_fp_pack_alu_constants(words, instr->constants);
+         else
+            grate_fp_pack_alu(words, instr->slots + i);
          PUSH(words[0]);
          PUSH(words[1]);
       }

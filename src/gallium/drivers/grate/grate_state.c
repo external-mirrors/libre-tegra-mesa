@@ -52,6 +52,9 @@ static void grate_add_render_target(struct grate_context *context,
    struct grate_resource *res = grate_resource(ref->texture);
    uint32_t rt_params;
    
+   if (grate_debug & GRATE_DEBUG_TRACE)
+      fprintf(stderr, "GRATE RT: pipe_format=%s hw_format=%d\n",
+              util_format_short_name(ref->format), res->format);
    rt_params  = TGR3D_GLOBAL_SURFDESC_SURF_FORMAT(res->format);
    rt_params |= TGR3D_GLOBAL_SURFDESC_ARRAY_STRIDE(res->pitch);
    rt_params |= TGR3D_GLOBAL_SURFDESC_STRUCTURE(res->tiled);

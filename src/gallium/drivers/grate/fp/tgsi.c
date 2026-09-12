@@ -3,6 +3,9 @@
 #include "fpir.h"
 
 #include "tgsi/tgsi_parse.h"
+#include "tgsi/tgsi_info.h"
+#include "util/u_math.h"
+#include <string.h>
 
 #include "util/u_memory.h"
 
@@ -48,6 +51,95 @@ fp_alu_src_one()
    return src;
 }
 
+
+/*
+ * Emission context for one TGSI instruction. Embedded constants are pooled per
+ * ALU packet: up to three fp20 values live in the packet's fourth slot and are
+ * addressed as registers 28..30.
+ */
+struct fp_emit_ctx {
+   struct grate_fp_shader *fp;
+   struct fp_mfu_instr *mfu;
+   uint32_t constants[3];
+   int num_constants;
+};
+
+/* Returns the register index for a constant, or -1 if the pool is full. */
+static int
+fp_alloc_constant(struct fp_emit_ctx *ctx, float v)
+{
+   uint32_t enc = grate_fp20_from_float(v);
+
+   for (int i = 0; i < ctx->num_constants; ++i)
+      if (ctx->constants[i] == enc)
+         return 28 + i;
+
+   if (ctx->num_constants == 3)
+      return -1;
+
+   ctx->constants[ctx->num_constants] = enc;
+   return 28 + ctx->num_constants++;
+}
+
+/*
+ * Map a TGSI source component onto an ALU operand.
+ *
+ * Register file (docs/fragment-shader-isa.md, "Registers"):
+ *    0..15 row registers (interpolated varyings)   28..30 embedded constants
+ *   16..23 global registers                           31  lowp vec2(0, 1)
+ *   24..27 ALU result registers                    32..63 uniform registers
+ */
+static struct fp_alu_src_operand
+fp_alu_src_tgsi(struct fp_emit_ctx *ctx, const struct tgsi_src_register *src,
+                int slot, int comp)
+{
+   struct fp_alu_src_operand op;
+
+   switch (src->File) {
+   case TGSI_FILE_INPUT:
+      assert(ctx->mfu != NULL);
+      ctx->mfu->var[slot].op = FP_VAR_OP_FP20;
+      ctx->mfu->var[slot].tram_row = src->Index;
+      ctx->fp->info.max_tram_row = MAX2(ctx->fp->info.max_tram_row, src->Index);
+      op = fp_alu_src_row(comp);
+      break;
+
+   case TGSI_FILE_IMMEDIATE: {
+      float v = 0.0f;
+      if (src->Index < (int)ctx->fp->num_immediates)
+         v = ctx->fp->immediates[src->Index][comp];
+      else
+         fprintf(stderr, "GRATE FRAG: immediate %d out of range\n", src->Index);
+
+      /* 0.0 and 1.0 are free in the lowp constant register */
+      if (v == 0.0f) { op = fp_alu_src_zero(); break; }
+      if (v == 1.0f) { op = fp_alu_src_one(); break; }
+
+      int reg = fp_alloc_constant(ctx, v);
+      if (reg < 0) {
+         fprintf(stderr, "GRATE FRAG: out of embedded constants for %f\n", v);
+         op = fp_alu_src_zero();
+         break;
+      }
+      struct fp_alu_src_operand c = { .index = reg, .datatype = FP_DATATYPE_FP20 };
+      op = c;
+      break;
+   }
+
+   case TGSI_FILE_TEMPORARY:
+   default:
+      op = fp_alu_src_reg(src->Index * 4 + comp);
+      break;
+   }
+
+   if (src->Negate)
+      op.negate = !op.negate;
+   if (src->Absolute)
+      op.absolute_value = true;
+
+   return op;
+}
+
 static struct fp_alu_instr
 fp_alu_sMOV(struct fp_alu_dst_operand dst, struct fp_alu_src_operand src)
 {
@@ -87,53 +179,112 @@ fp_alu_dst(const struct tgsi_dst_register *dst, int subreg, bool saturate)
    return ret;
 }
 
+/*
+ * The ALU computes rA*rB + rC*rD, with rD disabled (it is a 1-bit selector for
+ * rB/rC, and "enable rD" scales rC by it), so every op below is expressed as
+ * rA*rB + rC. MIN/MAX take min/max of the two products instead.
+ */
+enum fp_src_form {
+   FP_FORM_MOV,   /* s0 * 1 + 0      */
+   FP_FORM_MUL,   /* s0 * s1 + 0     */
+   FP_FORM_ADD,   /* s0 * 1 + s1     */
+   FP_FORM_MAD,   /* s0 * s1 + s2    */
+   FP_FORM_SUB,   /* s0 * 1 + (-s1)  */
+};
+
 static void
-emit_vMOV(struct grate_fp_shader *fp, const struct tgsi_dst_register *dst,
-          bool saturate, const struct tgsi_src_register *src)
+emit_alu(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
+         enum fp_alu_op op, enum fp_src_form form)
 {
+   const struct tgsi_dst_register *dst = &tinst->Dst[0].Register;
+   bool saturate = tinst->Instruction.Saturate != 0;
+
    struct fp_instr *inst = CALLOC_STRUCT(fp_instr);
    list_inithead(&inst->link);
 
-   struct fp_mfu_instr *mfu = NULL;
-   if (src->File == TGSI_FILE_INPUT) {
-      mfu = CALLOC_STRUCT(fp_mfu_instr);
-      list_inithead(&mfu->link);
+   struct fp_emit_ctx ctx = { .fp = fp, .mfu = NULL, .num_constants = 0 };
+
+   for (unsigned i = 0; i < tinst->Instruction.NumSrcRegs; ++i) {
+      if (tinst->Src[i].Register.File == TGSI_FILE_INPUT) {
+         ctx.mfu = CALLOC_STRUCT(fp_mfu_instr);
+         list_inithead(&ctx.mfu->link);
+         break;
+      }
    }
 
-   int swizzle[] = {
-      src->SwizzleX,
-      src->SwizzleY,
-      src->SwizzleZ,
-      src->SwizzleW
-   };
+   struct fp_alu_instr instrs[4];
+   int num_instrs = 0;
 
-   struct fp_alu_instr_packet *alu = CALLOC_STRUCT(fp_alu_instr_packet);
-   int alu_instrs = 0;
-   list_inithead(&alu->link);
    for (int i = 0; i < 4; ++i) {
       if ((dst->WriteMask & (1 << i)) == 0)
          continue;
 
-      int comp = swizzle[i];
+      struct fp_alu_src_operand s[3];
+      for (unsigned k = 0; k < tinst->Instruction.NumSrcRegs && k < 3; ++k) {
+         const struct tgsi_src_register *sr = &tinst->Src[k].Register;
+         const int sw[4] = { sr->SwizzleX, sr->SwizzleY, sr->SwizzleZ, sr->SwizzleW };
+         s[k] = fp_alu_src_tgsi(&ctx, sr, i, sw[i]);
+      }
 
-      struct fp_alu_src_operand src0 = { };
-      if (src->File == TGSI_FILE_INPUT) {
-         mfu->var[i].op = FP_VAR_OP_FP20;
-         mfu->var[i].tram_row = src->Index;
-         fp->info.max_tram_row = MAX2(fp->info.max_tram_row, src->Index);
-         src0 = fp_alu_src_row(comp);
-      } else
-         src0 = fp_alu_src_reg(src->Index + comp);
+      struct fp_alu_src_operand rA, rB, rC;
+      switch (form) {
+      case FP_FORM_MOV: rA = s[0]; rB = fp_alu_src_one();  rC = fp_alu_src_zero(); break;
+      case FP_FORM_MUL: rA = s[0]; rB = s[1];              rC = fp_alu_src_zero(); break;
+      case FP_FORM_ADD: rA = s[0]; rB = fp_alu_src_one();  rC = s[1];              break;
+      case FP_FORM_MAD: rA = s[0]; rB = s[1];              rC = s[2];              break;
+      case FP_FORM_SUB: rA = s[0]; rB = fp_alu_src_one();  rC = s[1];
+                        rC.negate = !rC.negate;                                    break;
+      default:          UNREACHABLE("bad fp source form");
+      }
 
-      alu->slots[alu_instrs++] = fp_alu_sMOV(fp_alu_dst(dst, i, saturate), src0);
+      struct fp_alu_instr a = {
+         .op = op,
+         .dst = fp_alu_dst(dst, i, saturate),
+         /* src[3] mirrors src[2] so the rD selector is stable and stays off */
+         .src = { rA, rB, rC, rC },
+      };
+      instrs[num_instrs++] = a;
    }
-   inst->alu_sched.num_instructions = 1;
-   inst->alu_sched.address = list_length(&fp->fp_instructions);
 
-   if (mfu != NULL) {
+   if (num_instrs == 0) {
+      FREE(inst);
+      FREE(ctx.mfu);
+      return;
+   }
+
+   /* Constants occupy the fourth slot, so only three instructions fit then. */
+   int per_packet = ctx.num_constants > 0 ? 3 : 4;
+   int first_packet = list_length(&fp->alu_instructions);
+   int num_packets = 0;
+
+   for (int i = 0; i < num_instrs; i += per_packet) {
+      struct fp_alu_instr_packet *pkt = CALLOC_STRUCT(fp_alu_instr_packet);
+      list_inithead(&pkt->link);
+
+      int n = MIN2(per_packet, num_instrs - i);
+      for (int k = 0; k < n; ++k)
+         pkt->slots[k] = instrs[i + k];
+
+      if (ctx.num_constants > 0) {
+         pkt->has_constants = true;
+         memcpy(pkt->constants, ctx.constants, sizeof(pkt->constants));
+      }
+
+      list_addtail(&pkt->link, &fp->alu_instructions);
+      num_packets++;
+   }
+
+   if (num_packets > 3)
+      fprintf(stderr, "GRATE FRAG: %d ALU packets exceeds the 3 the scheduler "
+                      "can issue\n", num_packets);
+
+   inst->alu_sched.num_instructions = num_packets;
+   inst->alu_sched.address = first_packet;
+
+   if (ctx.mfu != NULL) {
       inst->mfu_sched.num_instructions = 1;
-      inst->mfu_sched.address = list_length(&fp->fp_instructions);
-      list_addtail(&mfu->link, &fp->mfu_instructions);
+      inst->mfu_sched.address = list_length(&fp->mfu_instructions);
+      list_addtail(&ctx.mfu->link, &fp->mfu_instructions);
    }
 
    if (dst->File == TGSI_FILE_OUTPUT) {
@@ -143,24 +294,37 @@ emit_vMOV(struct grate_fp_shader *fp, const struct tgsi_dst_register *dst,
       inst->dw.src_regs = FP_DW_REGS_R2_R3; // hard-coded for now
    }
 
-   list_addtail(&alu->link, &fp->alu_instructions);
    list_addtail(&inst->link, &fp->fp_instructions);
 }
 
 static void
 emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *inst)
 {
-   bool saturate = inst->Instruction.Saturate != 0;
-
    switch (inst->Instruction.Opcode) {
    case TGSI_OPCODE_MOV:
-      emit_vMOV(fp, &inst->Dst[0].Register, saturate,
-                    &inst->Src[0].Register);
+      emit_alu(fp, inst, FP_ALU_OP_MAD, FP_FORM_MOV);
+      break;
+   case TGSI_OPCODE_MUL:
+      emit_alu(fp, inst, FP_ALU_OP_MAD, FP_FORM_MUL);
+      break;
+   case TGSI_OPCODE_ADD:
+      emit_alu(fp, inst, FP_ALU_OP_MAD, FP_FORM_ADD);
+      break;
+   case TGSI_OPCODE_MAD:
+      emit_alu(fp, inst, FP_ALU_OP_MAD, FP_FORM_MAD);
+      break;
+   case TGSI_OPCODE_MIN:
+      emit_alu(fp, inst, FP_ALU_OP_MIN, FP_FORM_ADD);
+      break;
+   case TGSI_OPCODE_MAX:
+      emit_alu(fp, inst, FP_ALU_OP_MAX, FP_FORM_ADD);
       break;
 
    default:
-      fprintf(stderr, "GRATE FRAG TGSI UNIMPLEMENTED: 0x%02x\n", inst->Instruction.Opcode);
-      assert(0);
+      fprintf(stderr, "GRATE FRAG TGSI UNIMPLEMENTED: 0x%02x (%s)\n",
+              inst->Instruction.Opcode,
+              tgsi_get_opcode_name(inst->Instruction.Opcode));
+      break;
    }
 }
 
@@ -208,6 +372,7 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
    list_inithead(&fp->alu_instructions);
    list_inithead(&fp->mfu_instructions);
 
+   fp->num_immediates = 0;
    fp->info.num_inputs = 0;
    fp->info.color_input = -1;
    fp->info.max_tram_row = 1;
@@ -218,6 +383,16 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
       case TGSI_TOKEN_TYPE_DECLARATION:
          emit_tgsi_declaration(fp, &tgsi->FullToken.FullDeclaration);
          break;
+
+      case TGSI_TOKEN_TYPE_IMMEDIATE: {
+         const struct tgsi_full_immediate *imm = &tgsi->FullToken.FullImmediate;
+         if (fp->num_immediates < GRATE_FP_MAX_IMMEDIATES) {
+            for (int i = 0; i < 4; ++i)
+               fp->immediates[fp->num_immediates][i] = imm->u[i].Float;
+            fp->num_immediates++;
+         }
+         break;
+      }
 
       case TGSI_TOKEN_TYPE_INSTRUCTION:
          if (tgsi->FullToken.FullInstruction.Instruction.Opcode != TGSI_OPCODE_END)
@@ -231,6 +406,18 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
     * This will overwrite instructions in some cases, need proper scheduler
     * to fix properly
     */
+    if (list_is_empty(&fp->mfu_instructions)) {
+       struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
+       list_inithead(&mfu->link);
+       list_addtail(&mfu->link, &fp->mfu_instructions);
+
+       /* give every pipeline instruction an MFU slot to point at */
+       list_for_each_entry(struct fp_instr, inst, &fp->fp_instructions, link) {
+          inst->mfu_sched.num_instructions = 1;
+          inst->mfu_sched.address = 0;
+       }
+    }
+
     struct fp_mfu_instr *first = list_first_entry(&fp->mfu_instructions, struct fp_mfu_instr, link);
     first->sfu.op = FP_SFU_OP_RCP;
     first->sfu.reg = 4;

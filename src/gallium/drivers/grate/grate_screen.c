@@ -382,7 +382,13 @@ grate_screen_is_format_supported(struct pipe_screen *pscreen,
                                  unsigned storage_sample_count,
                                  unsigned usage)
 {
-   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL)) {
+   /*
+    * Sampler views go through grate_screen_resource_create() too, so an
+    * unsupported format has to be rejected here rather than asserting there.
+    * Saying no lets the frontend pick a format the hardware does have.
+    */
+   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL |
+                PIPE_BIND_SAMPLER_VIEW)) {
       if (grate_pixel_format(format) < 0)
          return false;
    }

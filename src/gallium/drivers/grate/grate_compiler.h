@@ -22,11 +22,17 @@ struct grate_fp_info {
    int max_tram_row;
 };
 
+/* TGSI immediates the shader declared, resolved to ALU operands at emit time */
+#define GRATE_FP_MAX_IMMEDIATES 32
+
 struct grate_fp_shader {
    struct list_head fp_instructions;
    struct list_head alu_instructions;
    struct list_head mfu_instructions;
    struct grate_fp_info info;
+
+   float immediates[GRATE_FP_MAX_IMMEDIATES][4];
+   unsigned num_immediates;
 };
 
 void
