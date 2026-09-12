@@ -57,4 +57,7 @@
 #define GRATE_PSEQ_MIN_OUT   0x0c8
 #define GRATE_ALU_BUFFER_SIZE 1
 
+/* libgrate calls this NOT_POW2_DIMENSIONS; absent from our register header */
+#define GRATE_TEXDESC_HI_NOT_POW2 0x00000040
+
 #endif // GRATE_COMMON_H

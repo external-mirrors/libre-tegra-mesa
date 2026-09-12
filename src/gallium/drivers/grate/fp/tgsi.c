@@ -81,6 +81,23 @@ fp_alloc_constant(struct fp_emit_ctx *ctx, float v)
    return 28 + ctx->num_constants++;
 }
 
+
+/*
+ * TEX writes RGBA into R2-R3 as four fx10s, laid out exactly as fp_alu_dst()
+ * places a colour output. Reading such a temporary back has to mirror that.
+ */
+static struct fp_alu_src_operand
+fp_alu_src_tex_result(int comp)
+{
+   int o = comp < 3 ? (2 - comp) : 3;
+   struct fp_alu_src_operand src = {
+      .index = 2 + o / 2,
+      .datatype = FP_DATATYPE_FIXED10,
+      .sub_reg_select_high = (o % 2) != 0,
+   };
+   return src;
+}
+
 /*
  * Map a TGSI source component onto an ALU operand.
  *
@@ -127,6 +144,12 @@ fp_alu_src_tgsi(struct fp_emit_ctx *ctx, const struct tgsi_src_register *src,
    }
 
    case TGSI_FILE_TEMPORARY:
+      if ((int)src->Index == ctx->fp->tex_temp)
+         op = fp_alu_src_tex_result(comp);
+      else
+         op = fp_alu_src_reg(src->Index * 4 + comp);
+      break;
+
    default:
       op = fp_alu_src_reg(src->Index * 4 + comp);
       break;
@@ -297,6 +320,61 @@ emit_alu(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
    list_addtail(&inst->link, &fp->fp_instructions);
 }
 
+
+/*
+ * TEX takes its coordinates from row registers R0/R1, which is where the MFU
+ * interpolates the coordinate varying, and writes RGBA to R2-R3 - the same
+ * registers the DW stage stores. This mirrors grate's reference shader:
+ *
+ *    MFU: ipl: t0.fp20, t0.fp20, NOP, NOP
+ *    TEX: tex r2, r3, tex0, r0, r1, r2
+ *    DW:  store rt1, r2, r3
+ */
+static void
+emit_tex(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
+{
+   const struct tgsi_dst_register *dst = &tinst->Dst[0].Register;
+   const struct tgsi_src_register *coord = &tinst->Src[0].Register;
+
+   struct fp_instr *inst = CALLOC_STRUCT(fp_instr);
+   list_inithead(&inst->link);
+
+   if (coord->File == TGSI_FILE_INPUT) {
+      struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
+      list_inithead(&mfu->link);
+
+      /* S and T come from row registers 0 and 1 */
+      const int sw[4] = { coord->SwizzleX, coord->SwizzleY, coord->SwizzleZ, coord->SwizzleW };
+      for (int c = 0; c < 2; ++c) {
+         mfu->var[sw[c]].op = FP_VAR_OP_FP20;
+         mfu->var[sw[c]].tram_row = coord->Index;
+      }
+      fp->info.max_tram_row = MAX2(fp->info.max_tram_row, coord->Index);
+
+      inst->mfu_sched.address = list_length(&fp->mfu_instructions);
+      inst->mfu_sched.num_instructions = 1;
+      list_addtail(&mfu->link, &fp->mfu_instructions);
+   } else {
+      fprintf(stderr, "GRATE FRAG: TEX coordinates must come from a varying\n");
+   }
+
+   inst->tex.enable = true;
+   inst->tex.sampler = tinst->Instruction.NumSrcRegs > 1 ?
+                       tinst->Src[1].Register.Index : 0;
+   inst->tex.dst_r2_r3 = true;
+   inst->tex.src_r2_r3 = false;
+
+   if (dst->File == TGSI_FILE_OUTPUT) {
+      inst->dw.enable = 1;
+      inst->dw.index = dst->Index;
+      inst->dw.src_regs = FP_DW_REGS_R2_R3;
+   } else if (dst->File == TGSI_FILE_TEMPORARY) {
+      fp->tex_temp = dst->Index;
+   }
+
+   list_addtail(&inst->link, &fp->fp_instructions);
+}
+
 static void
 emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *inst)
 {
@@ -318,6 +396,9 @@ emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *
       break;
    case TGSI_OPCODE_MAX:
       emit_alu(fp, inst, FP_ALU_OP_MAX, FP_FORM_ADD);
+      break;
+   case TGSI_OPCODE_TEX:
+      emit_tex(fp, inst);
       break;
 
    default:
@@ -379,6 +460,7 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
 
 
    fp->num_immediates = 0;
+   fp->tex_temp = -1;
    fp->info.num_inputs = 0;
    fp->info.color_input = -1;
    fp->info.max_tram_row = 1;

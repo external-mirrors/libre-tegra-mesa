@@ -25,6 +25,8 @@ struct grate_channel {
    struct grate_stream stream;
 };
 
+#define GRATE_MAX_SAMPLERS 16
+
 struct grate_context {
    struct pipe_context base;
 
@@ -45,6 +47,11 @@ struct grate_context {
 
    struct grate_vertex_shader_state *vshader;
    struct grate_fragment_shader_state *fshader;
+
+   struct pipe_sampler_view *sampler_views[GRATE_MAX_SAMPLERS];
+   struct pipe_sampler_state *samplers[GRATE_MAX_SAMPLERS];
+   unsigned num_sampler_views;
+   unsigned num_samplers;
 
    uint32_t no_scissor[3];
    uint32_t viewport[10];

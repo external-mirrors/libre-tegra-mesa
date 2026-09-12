@@ -147,6 +147,19 @@ grate_fp_pack_alu(uint32_t *dst, struct fp_alu_instr *instr)
 }
 
 uint32_t
+grate_fp_pack_tex(struct fp_tex_instr *instr)
+{
+   if (!instr->enable)
+      return 0;
+
+   return (instr->sampler & 0xf) |
+          ((uint32_t)instr->src_r2_r3 << 4) |
+          ((uint32_t)instr->dst_r2_r3 << 5) |
+          (1u << 10) |
+          ((uint32_t)instr->bias << 12);
+}
+
+uint32_t
 grate_fp_pack_dw(struct fp_dw_instr *instr)
 {
    union {

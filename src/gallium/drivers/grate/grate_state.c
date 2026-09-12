@@ -6,6 +6,7 @@
 #include "util/u_bitcast.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_framebuffer.h"
 
@@ -173,7 +174,31 @@ grate_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                         unsigned unbind_num_trailing_slots,
                         struct pipe_sampler_view **views)
 {
-   grate_unimplemented();
+   struct grate_context *context = grate_context(pctx);
+
+   /* only the fragment stage can sample on this hardware */
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+
+   for (unsigned i = 0; i < num_views; ++i) {
+      unsigned slot = start_slot + i;
+      if (slot >= GRATE_MAX_SAMPLERS)
+         break;
+      pipe_sampler_view_reference(&context->sampler_views[slot],
+                                  views ? views[i] : NULL);
+   }
+
+   for (unsigned i = 0; i < unbind_num_trailing_slots; ++i) {
+      unsigned slot = start_slot + num_views + i;
+      if (slot >= GRATE_MAX_SAMPLERS)
+         break;
+      pipe_sampler_view_reference(&context->sampler_views[slot], NULL);
+   }
+
+   context->num_sampler_views = 0;
+   for (unsigned i = 0; i < GRATE_MAX_SAMPLERS; ++i)
+      if (context->sampler_views[i])
+         context->num_sampler_views = i + 1;
 }
 
 static void
@@ -271,7 +296,22 @@ grate_bind_sampler_states(struct pipe_context *pcontext,
                           unsigned start_slot, unsigned num_samplers,
                           void **samplers)
 {
-   grate_unimplemented();
+   struct grate_context *context = grate_context(pcontext);
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+
+   for (unsigned i = 0; i < num_samplers; ++i) {
+      unsigned slot = start_slot + i;
+      if (slot >= GRATE_MAX_SAMPLERS)
+         break;
+      context->samplers[slot] = samplers ? samplers[i] : NULL;
+   }
+
+   context->num_samplers = 0;
+   for (unsigned i = 0; i < GRATE_MAX_SAMPLERS; ++i)
+      if (context->samplers[i])
+         context->num_samplers = i + 1;
 }
 
 static void
@@ -602,6 +642,86 @@ emit_render_targets(struct grate_context *context, uint32_t **ptrp)
    GRATE_PUSHBUF_WORD(*ptrp, fb->rt_mask);
 }
 
+/*
+ * Texture descriptors, following libgrate's grate_3d_set_texture_desc():
+ * DESC_LO carries format and filter/wrap state, DESC_HI the dimensions, given
+ * as log2 for power-of-two textures and literally otherwise.
+ */
+static void
+emit_textures(struct grate_context *context, uint32_t **ptrp)
+{
+   struct grate_stream *stream = &context->gr3d->stream;
+   unsigned num = context->num_sampler_views;
+
+   if (num == 0)
+      return;
+
+   for (unsigned i = 0; i < num; ++i) {
+      struct pipe_sampler_view *view = context->sampler_views[i];
+      if (!view || !view->texture)
+         continue;
+
+      struct grate_resource *res = grate_resource(view->texture);
+      const struct pipe_sampler_state *smp = context->samplers[i];
+
+      GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_TEX_TEXADDR(i), 1));
+      grate_stream_push_reloc(stream, ptrp, res->bo, 0);
+
+      unsigned width = view->texture->width0;
+      unsigned height = view->texture->height0;
+      int log2_width = util_logbase2(width);
+      int log2_height = util_logbase2(height);
+      bool pot = (width == (1u << log2_width)) && (height == (1u << log2_height));
+
+      bool mag_linear = smp && smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
+      bool min_linear = smp && smp->min_img_filter == PIPE_TEX_FILTER_LINEAR;
+      bool mip_linear = smp && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR;
+      bool mipmapped  = smp && smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE;
+
+      uint32_t lo = TGR3D_TEX_TEXDESC_LO_SURF_FORMAT(res->format);
+      if (mag_linear)
+         lo |= TGR3D_TEX_TEXDESC_LO_LERP_MAG;
+      if (min_linear)
+         lo |= TGR3D_TEX_TEXDESC_LO_LERP_MIN;
+      if (mip_linear)
+         lo |= TGR3D_TEX_TEXDESC_LO_LERP_MIP;
+      if (smp) {
+         if (smp->wrap_s == PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+            lo |= TGR3D_TEX_TEXDESC_LO_CLAMP_S(TGR3D_CLAMP_CLAMP);
+         if (smp->wrap_t == PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+            lo |= TGR3D_TEX_TEXDESC_LO_CLAMP_T(TGR3D_CLAMP_CLAMP);
+         if (smp->wrap_s == PIPE_TEX_WRAP_MIRROR_REPEAT)
+            lo |= TGR3D_TEX_TEXDESC_LO_MIRROR_S(TGR3D_STATE_ENABLED);
+         if (smp->wrap_t == PIPE_TEX_WRAP_MIRROR_REPEAT)
+            lo |= TGR3D_TEX_TEXDESC_LO_MIRROR_T(TGR3D_STATE_ENABLED);
+      }
+
+      uint32_t hi = 0;
+      if (!mipmapped)
+         hi |= TGR3D_TEX_TEXDESC_HI_NORMALIZE__MASK;  /* MIPMAP_DISABLE */
+
+      if (pot) {
+         hi |= TGR3D_TEX_TEXDESC_HI_LOG2_WIDTH(log2_width);
+         hi |= TGR3D_TEX_TEXDESC_HI_LOG2_HEIGHT(log2_height);
+      } else {
+         hi |= GRATE_TEXDESC_HI_NOT_POW2;
+         hi |= TGR3D_TEX_TEXDESC_HI_WIDTH(width);
+         hi |= TGR3D_TEX_TEXDESC_HI_HEIGHT(height);
+      }
+
+      if (grate_debug & GRATE_DEBUG_TRACE)
+         fprintf(stderr, "GRATE TEX%u: %s %ux%u pitch=%u hw_fmt=%d pot=%d "
+                         "lo=%08x hi=%08x smp=%p\n",
+                 i, util_format_short_name(view->texture->format),
+                 width, height, res->pitch, res->format, pot, lo, hi,
+                 (void *)smp);
+
+      GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_TEX_TEXDESC_LO(i), 2));
+      GRATE_PUSHBUF_WORD(*ptrp, lo);
+      GRATE_PUSHBUF_WORD(*ptrp, hi);
+   }
+}
+
 static void
 emit_scissor(struct grate_context *context, uint32_t **ptrp)
 {
@@ -703,6 +823,7 @@ grate_emit_state(struct grate_context *context, uint32_t **ptrp)
    emit_zsa_state(context, ptrp);
    emit_attribs(context, ptrp);
    emit_vs_uniforms(context, ptrp);
+   emit_textures(context, ptrp);
    emit_program(context, ptrp);
 }
 

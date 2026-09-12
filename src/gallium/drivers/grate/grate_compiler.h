@@ -45,6 +45,10 @@ struct grate_fp_shader {
 
    float immediates[GRATE_FP_MAX_IMMEDIATES][4];
    unsigned num_immediates;
+
+   /* temporary holding a TEX result, which lives in R2-R3 rather than a
+    * general register; -1 when the shader has none */
+   int tex_temp;
 };
 
 void

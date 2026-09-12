@@ -149,6 +149,19 @@ struct fp_alu_instr_packet {
 uint32_t grate_fp20_from_float(float f);
 void grate_fp_pack_alu_constants(uint32_t *dst, const uint32_t *constants);
 
+/*
+ * TEX reads the coordinates from the first row of the pixel packet and writes
+ * the sampled RGBA back there as four fx10s
+ * (docs/fragment-shader-isa.md, "TEX instruction word encoding").
+ */
+struct fp_tex_instr {
+   bool enable;
+   bool bias;
+   unsigned sampler;
+   bool dst_r2_r3;   /* false: R0-R1 */
+   bool src_r2_r3;   /* false: S,T,R,LOD from R0,R1,R2,R3 */
+};
+
 struct fp_sched {
    int num_instructions;
    int address;
@@ -158,13 +171,16 @@ struct fp_instr {
    struct list_head link;
    // TODO: PSEQ
    struct fp_sched mfu_sched;
-   // TODO: TEX
+   struct fp_tex_instr tex;
    struct fp_sched alu_sched;
    struct fp_dw_instr dw;
 };
 
 void
 grate_fp_pack_alu(uint32_t *dst, struct fp_alu_instr *instr);
+
+uint32_t
+grate_fp_pack_tex(struct fp_tex_instr *instr);
 
 uint32_t
 grate_fp_pack_dw(struct fp_dw_instr *instr);
