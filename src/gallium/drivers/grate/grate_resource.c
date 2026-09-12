@@ -180,8 +180,29 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
    height = template->height0;
 
    resource->tiled = 0;
-   if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
-                         PIPE_BIND_DEPTH_STENCIL)) {
+
+   /*
+    * A texture descriptor carries no stride: the sampler derives it from the
+    * power-of-two extent enclosing the width, so a sampled surface has to be
+    * allocated that wide, or every row is read at a growing offset and the
+    * image skews. Measured on a 500x400 texture the drift is 32 bytes per
+    * row, which is exactly next_pot(500)*4 - align(500*4, 32).
+    *
+    * Buffers anyone outside the driver can see keep the stride the display
+    * controller and importers agreed on instead, even though that makes them
+    * sample incorrectly: changing it corrupts scanout.
+    */
+   const unsigned shared_binds = PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+                                 PIPE_BIND_SHARED | PIPE_BIND_LINEAR;
+
+   if ((template->bind & PIPE_BIND_SAMPLER_VIEW) &&
+       !(template->bind & shared_binds)) {
+      resource->pitch = util_next_power_of_two(template->width0) *
+                        util_format_get_blocksize(template->format);
+      height = util_next_power_of_two(height);
+      flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
+   } else if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
+                                PIPE_BIND_DEPTH_STENCIL)) {
       if (template->bind & PIPE_BIND_DEPTH_STENCIL)
          resource->pitch = align(resource->pitch, 256);
       else
@@ -189,11 +210,6 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
 
       flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
    }
-   /*
-    * A texture descriptor carries no pitch, so the sampler derives the row
-    * stride from the width. Padding the pitch of a sample-only resource
-    * therefore shears the image; leave it at width * blocksize.
-    */
 
    if (template->target != PIPE_BUFFER) {
       /* pick pixel-format */

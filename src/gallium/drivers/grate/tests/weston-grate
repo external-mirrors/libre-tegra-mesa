@@ -8,6 +8,7 @@
 #   weston-grate                              # panel, GL renderer
 #   weston-grate --renderer=pixman            # software, to compare against
 #   GRATE_MESA=$HOME/Dev/stage-main weston-grate   # try a build uninstalled
+#   weston-grate --debug          # then weston-grate-shot to capture the screen
 #
 # Extra arguments are passed through to weston.
 
