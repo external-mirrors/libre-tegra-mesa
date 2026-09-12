@@ -251,8 +251,9 @@ grate_create_fs_state(struct pipe_context *pcontext,
    PUSH(0x20006000 | num_fp_instrs);
 
    PUSH(host1x_opcode_incr(REG_TGR3D_PSEQ_DWR_IF_STATE, 1));
-   // TODO: document/convert these values
-   PUSH(0x00000040);
+   /* START=0, COUNT=1. Feeding num_dw_instrs in here instead was measured to
+    * change nothing, so the hardware evidently does not want the store count. */
+   PUSH(TGR3D_PSEQ_DWR_IF_STATE_START(0) | TGR3D_PSEQ_DWR_IF_STATE_COUNT(1));
 
    if (soc_id == DRM_TEGRA_SOC_T114) {
       // TODO: document/convert these values

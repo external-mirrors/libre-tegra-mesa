@@ -877,15 +877,33 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
       }
    }
 
-   struct fp_mfu_instr *first =
-      list_first_entry(&fp->mfu_instructions, struct fp_mfu_instr, link);
+   /*
+    * The weights are consumed by the interpolators in the very instruction
+    * that computes them, so every MFU instruction that interpolates needs its
+    * own copy of the setup, not just the first one. Giving it only to the
+    * first left every later interpolation reading stale weights: a small error
+    * in a smooth varying, and a completely wrong value in anything that feeds
+    * a texture coordinate or a special function.
+    *
+    * An MFU instruction that interpolates nothing is left alone - that is
+    * where the SFU ops do their own work, and they have no weights to compute.
+    */
+   list_for_each_entry(struct fp_mfu_instr, mfu, &fp->mfu_instructions, link) {
+      bool interpolates = false;
+      for (int i = 0; i < 4; ++i)
+         if (mfu->var[i].op != FP_VAR_OP_NOP)
+            interpolates = true;
 
-   first->sfu.op = FP_SFU_OP_RCP;
-   first->sfu.reg = 4;
-   first->mul[0].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
-   first->mul[0].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
-   first->mul[0].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_0;
-   first->mul[1].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
-   first->mul[1].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
-   first->mul[1].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_1;
+      if (!interpolates && mfu->sfu.op != FP_SFU_OP_NOP)
+         continue;
+
+      mfu->sfu.op = FP_SFU_OP_RCP;
+      mfu->sfu.reg = 4;
+      mfu->mul[0].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
+      mfu->mul[0].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
+      mfu->mul[0].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_0;
+      mfu->mul[1].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
+      mfu->mul[1].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
+      mfu->mul[1].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_1;
+   }
 }
