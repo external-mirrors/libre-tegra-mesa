@@ -40,6 +40,28 @@ static const struct testcase tests[] = {
    { "saturate",    "void main(){ gl_FragColor = clamp(vec4(2.0,-1.0,0.5,1.0), 0.0, 1.0); }", 0, 0 },
    { "two_inst",    "void main(){ gl_FragColor.xy = vec2(1.0,0.0); gl_FragColor.zw = vec2(0.0,1.0); }", 0, 0 },
    { "three_inst",  "void main(){ gl_FragColor.x = 1.0; gl_FragColor.y = 0.0; gl_FragColor.zw = vec2(0.5,1.0); }", 0, 0 },
+   /* ops with no ALU opcode of their own: lowered to the SFU or to a
+    * sequence. uv keeps the GLSL compiler from folding them away. */
+   { "seq",         "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(equal(vec4(uv,0.0,1.0), vec4(0.5,0.5,0.0,1.0))); }", 1, 0 },
+   { "sne",         "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(notEqual(vec4(uv,0.0,1.0), vec4(0.5,0.5,0.0,1.0))); }", 1, 0 },
+   { "lrp",         "varying vec2 uv;\nvoid main(){ gl_FragColor = mix(vec4(1.0,0.0,0.0,1.0), vec4(0.0,1.0,0.5,1.0), uv.x); }", 1, 0 },
+   { "sfu_frc",         "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(fract(uv*3.0), 0.0, 1.0); }", 1, 0 },
+   { "sfu_flr",         "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(floor(uv*3.0)*0.25, 0.0, 1.0); }", 1, 0 },
+   { "sfu_rcp",         "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(1.0/(uv.x+1.5), 1.0/(uv.y+2.0), 0.0, 1.0); }", 1, 0 },
+   { "sfu_rsq",         "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(inversesqrt(uv.x+1.5)*0.5, 0.0, 0.0, 1.0); }", 1, 0 },
+   { "sfu_sqrt",       "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(sqrt(uv.x+0.25)*0.5, 0.0, 0.0, 1.0); }", 1, 0 },
+   { "sfu_frc_add",     "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(fract(uv.x+1.25), 0.0, 0.0, 1.0); }", 1, 0 },
+   { "sfu_rcp_scaled",  "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4((1.0/(uv.x+1.5))*0.5, 0.0, 0.0, 1.0); }", 1, 0 },
+   { "sfu_rcp_tmp",     "varying vec2 uv;\nvoid main(){ float r = 1.0/(uv.x+1.5); gl_FragColor = vec4(r, r, 0.0, 1.0); }", 1, 0 },
+   /* does a value written to a temporary survive into the next instruction? */
+   { "tmp_chain",   "varying vec2 uv;\nvoid main(){ float t = uv.x * 0.5; gl_FragColor = vec4(t + 0.25, 0.0, 0.0, 1.0); }", 1, 0 },
+   { "tmp_twice",   "varying vec2 uv;\nvoid main(){ float t = uv.x * 0.5; gl_FragColor = vec4(t, t, 0.0, 1.0); }", 1, 0 },
+   { "tmp_deep",    "varying vec2 uv;\nvoid main(){ float a = uv.x*0.5; float b = a+0.1; float c = b*2.0; gl_FragColor = vec4(c, 0.0, 0.0, 1.0); }", 1, 0 },
+   /* two separate instructions, each writing one output component */
+   { "two_out_same","varying vec2 uv;\nvoid main(){ gl_FragColor.x = uv.x*0.5; gl_FragColor.y = uv.x*0.25; gl_FragColor.zw = vec2(0.0,1.0); }", 1, 0 },
+   { "two_out_diff","varying vec2 uv;\nvoid main(){ gl_FragColor.x = uv.x*0.5; gl_FragColor.y = uv.y*0.25; gl_FragColor.zw = vec2(0.0,1.0); }", 1, 0 },
+   { "sfu_late",    "varying vec2 uv;\nvoid main(){ gl_FragColor.x = uv.x*0.5; gl_FragColor.y = 1.0/(uv.x+1.5); gl_FragColor.zw = vec2(0.0,1.0); }", 1, 0 },
+   { "sfu_first",   "varying vec2 uv;\nvoid main(){ gl_FragColor.x = 1.0/(uv.x+1.5); gl_FragColor.y = uv.x*0.5; gl_FragColor.zw = vec2(0.0,1.0); }", 1, 0 },
    { "varying",     "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(uv, 0.0, 1.0); }", 1, 0 },
    { "varying_x",   "varying vec2 uv;\nvoid main(){ gl_FragColor = vec4(uv.x, 0.0, 0.0, 1.0); }", 1, 0 },
    { "texture",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 1 },
@@ -223,8 +245,10 @@ int main(void)
 
    static const GLfloat verts[] = { -1.0f,-1.0f, 3.0f,-1.0f, -1.0f,3.0f };
 
+   const char *only = getenv("FPTEST_ONLY");
    for (unsigned i = 0; i < sizeof(tests)/sizeof(tests[0]); i++) {
       const struct testcase *t = &tests[i];
+      if (only && strcmp(only, t->name) != 0) continue;
       char log[512] = {0};
       GLuint vs = compile(GL_VERTEX_SHADER, t->has_uv ? vs_uv : vs_plain, log, sizeof(log));
       if (!vs) { printf("%s VS_COMPILE_FAIL %s\n", t->name, log); continue; }

@@ -49,6 +49,11 @@ struct grate_fp_shader {
    /* temporary holding a TEX result, which lives in R2-R3 rather than a
     * general register; -1 when the shader has none */
    int tex_temp;
+
+   /* number of TGSI temporaries the shader declared. Lowering an opcode the
+    * hardware has no instruction for needs somewhere to put the intermediate,
+    * and those scratch vec4s are handed out from just past this. */
+   unsigned num_temps;
 };
 
 void

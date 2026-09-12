@@ -4,7 +4,9 @@
 
 #include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_info.h"
+#include "tgsi/tgsi_dump.h"
 #include "util/u_math.h"
+#include <stdlib.h>
 #include <string.h>
 
 #include "util/u_memory.h"
@@ -269,6 +271,7 @@ enum fp_src_form {
    FP_FORM_MAD,   /* s0 * s1 + s2    */
    FP_FORM_SUB,   /* s0 * 1 + (-s1)  */
    FP_FORM_SUB_REV, /* s1 * 1 + (-s0) */
+   FP_FORM_ONE_MINUS, /* (-s0) * 1 + 1  */
 };
 
 static void
@@ -326,6 +329,8 @@ emit_alu_cond(struct grate_fp_shader *fp, const struct tgsi_full_instruction *ti
                         rC.negate = !rC.negate;                                    break;
       case FP_FORM_SUB_REV: rA = s[1]; rB = fp_alu_src_one(); rC = s[0];
                         rC.negate = !rC.negate;                                    break;
+      case FP_FORM_ONE_MINUS: rA = s[0]; rA.negate = !rA.negate;
+                        rB = fp_alu_src_one(); rC = fp_alu_src_one();               break;
       default:          UNREACHABLE("bad fp source form");
       }
 
@@ -485,9 +490,196 @@ emit_tex(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
    list_addtail(&inst->link, &fp->fp_instructions);
 }
 
+/*
+ * Scratch vec4s live just past the temporaries the shader declared, so they go
+ * through the ordinary temporary register allocator and only cost registers in
+ * the shaders that actually need lowering.
+ */
+static struct tgsi_full_src_register
+fp_scratch_src(unsigned scratch)
+{
+   struct tgsi_full_src_register src = { 0 };
+   src.Register.File = TGSI_FILE_TEMPORARY;
+   src.Register.Index = scratch;
+   src.Register.SwizzleX = TGSI_SWIZZLE_X;
+   src.Register.SwizzleY = TGSI_SWIZZLE_Y;
+   src.Register.SwizzleZ = TGSI_SWIZZLE_Z;
+   src.Register.SwizzleW = TGSI_SWIZZLE_W;
+   return src;
+}
+
+static struct tgsi_full_dst_register
+fp_scratch_dst(unsigned scratch, unsigned writemask)
+{
+   struct tgsi_full_dst_register dst = { 0 };
+   dst.Register.File = TGSI_FILE_TEMPORARY;
+   dst.Register.Index = scratch;
+   dst.Register.WriteMask = writemask;
+   return dst;
+}
+
+/*
+ * SNE has no condition code of its own - the hardware offers only EQUAL,
+ * GEQUAL and GREATER - so compute SEQ into a scratch and turn it inside out.
+ */
+static void
+emit_sne(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
+{
+   unsigned scratch = fp->num_temps;
+   unsigned mask = tinst->Dst[0].Register.WriteMask;
+
+   struct tgsi_full_instruction seq = *tinst;
+   seq.Dst[0] = fp_scratch_dst(scratch, mask);
+   emit_alu_cond(fp, &seq, FP_ALU_OP_MAD, FP_FORM_SUB_REV, FP_CONDITION_EQUAL);
+
+   struct tgsi_full_instruction inv = *tinst;
+   inv.Instruction.NumSrcRegs = 1;
+   inv.Src[0] = fp_scratch_src(scratch);
+   emit_alu(fp, &inv, FP_ALU_OP_MAD, FP_FORM_ONE_MINUS);
+}
+
+/*
+ * LRP is s2 + s0 * (s1 - s2). The ALU computes one product plus an addend, so
+ * the difference has to be worked out first.
+ */
+static void
+emit_lrp(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
+{
+   unsigned scratch = fp->num_temps;
+   unsigned mask = tinst->Dst[0].Register.WriteMask;
+
+   struct tgsi_full_instruction sub = *tinst;
+   sub.Instruction.NumSrcRegs = 2;
+   sub.Src[0] = tinst->Src[1];
+   sub.Src[1] = tinst->Src[2];
+   sub.Dst[0] = fp_scratch_dst(scratch, mask);
+   emit_alu(fp, &sub, FP_ALU_OP_MAD, FP_FORM_SUB);
+
+   struct tgsi_full_instruction mad = *tinst;
+   mad.Instruction.NumSrcRegs = 3;
+   mad.Src[0] = tinst->Src[0];
+   mad.Src[1] = fp_scratch_src(scratch);
+   mad.Src[2] = tinst->Src[2];
+   emit_alu(fp, &mad, FP_ALU_OP_MAD, FP_FORM_MAD);
+}
+
+/*
+ * RCP, FRC and the rest of the transcendentals have no ALU opcode: they live in
+ * the MFU's special function unit, and the SFU's answer reaches the register
+ * file only by being multiplied into one of r0..r3. So an SFU op becomes an
+ * ordinary MOV that stages the operand into a scratch temporary - which also
+ * resolves varyings, uniforms and immediates for free - followed by one
+ * instruction per component whose MFU computes the function into r0 and whose
+ * ALU copies r0 where it belongs. r0 is safe to borrow: every instruction that
+ * wants a varying re-interpolates it into the row registers itself.
+ */
+static void
+emit_sfu(struct grate_fp_shader *fp, enum fp_sfu_op op,
+         const struct tgsi_full_instruction *tinst,
+         bool scalar_src, unsigned stage, unsigned dst_scratch, bool to_scratch)
+{
+   const struct tgsi_dst_register *dst = &tinst->Dst[0].Register;
+   bool saturate = tinst->Instruction.Saturate != 0;
+   unsigned mask = dst->WriteMask;
+
+   struct tgsi_full_instruction mov = *tinst;
+   mov.Instruction.NumSrcRegs = 1;
+   mov.Instruction.Saturate = 0;
+   mov.Dst[0] = fp_scratch_dst(stage, mask);
+   if (scalar_src) {
+      /* RCP is scalar: src.x feeds every written component */
+      unsigned sx = tinst->Src[0].Register.SwizzleX;
+      mov.Src[0].Register.SwizzleX = sx;
+      mov.Src[0].Register.SwizzleY = sx;
+      mov.Src[0].Register.SwizzleZ = sx;
+      mov.Src[0].Register.SwizzleW = sx;
+   }
+   emit_alu(fp, &mov, FP_ALU_OP_MAD, FP_FORM_MOV);
+
+   struct tgsi_full_dst_register scratch_dst = fp_scratch_dst(dst_scratch, mask);
+
+   for (int i = 0; i < 4; ++i) {
+      if ((mask & (1 << i)) == 0)
+         continue;
+
+      struct fp_instr *inst = CALLOC_STRUCT(fp_instr);
+      list_inithead(&inst->link);
+
+      /*
+       * The barycentric setup is folded into whichever MFU instruction comes
+       * first, and an MFU instruction has only the one SFU slot, so ours must
+       * never be first. If nothing has claimed that spot yet, leave an empty
+       * instruction there for it and run it alongside this one.
+       */
+      bool need_placeholder = list_is_empty(&fp->mfu_instructions);
+      if (need_placeholder) {
+         struct fp_mfu_instr *ph = CALLOC_STRUCT(fp_mfu_instr);
+         list_inithead(&ph->link);
+         list_addtail(&ph->link, &fp->mfu_instructions);
+      }
+
+      struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
+      list_inithead(&mfu->link);
+      mfu->sfu.op = op;
+      mfu->sfu.reg = fp_temp_reg(stage * 4 + i);
+      unsigned row = i & 3;
+      mfu->mul[0].dst = FP_MFU_MUL_DST_ROW_REG_0 + row;
+      mfu->mul[0].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
+      mfu->mul[0].src[1] = FP_MFU_MUL_SRC_CONST_1;
+
+      inst->mfu_sched.address = list_length(&fp->mfu_instructions) -
+                                (need_placeholder ? 1 : 0);
+      inst->mfu_sched.num_instructions = need_placeholder ? 2 : 1;
+      list_addtail(&mfu->link, &fp->mfu_instructions);
+
+      struct fp_alu_instr_packet *pkt = CALLOC_STRUCT(fp_alu_instr_packet);
+      list_inithead(&pkt->link);
+      struct fp_alu_src_operand r0 = {
+         .index = row,
+         .datatype = FP_DATATYPE_FP20,
+      };
+      pkt->slots[0] = fp_alu_sMOV(
+         to_scratch ? fp_alu_dst(&scratch_dst.Register, i, false)
+                    : fp_alu_dst(dst, i, saturate), r0);
+
+      inst->alu_sched.address = list_length(&fp->alu_instructions);
+      inst->alu_sched.num_instructions = 1;
+      list_addtail(&pkt->link, &fp->alu_instructions);
+
+      if (!to_scratch && dst->File == TGSI_FILE_OUTPUT) {
+         inst->dw.enable = 1;
+         inst->dw.index = dst->Index;
+         inst->dw.stencil_write = 0;
+         inst->dw.src_regs = FP_DW_REGS_R2_R3;
+      }
+
+      list_addtail(&inst->link, &fp->fp_instructions);
+   }
+}
+
+/* floor(x) is x - fract(x); the hardware only offers the fractional part. */
+static void
+emit_flr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst)
+{
+   unsigned stage = fp->num_temps;
+   unsigned frc = fp->num_temps + 1;
+
+   emit_sfu(fp, FP_SFU_OP_FRC, tinst, false, stage, frc, true);
+
+   struct tgsi_full_instruction sub = *tinst;
+   sub.Instruction.NumSrcRegs = 2;
+   sub.Src[0] = tinst->Src[0];
+   sub.Src[1] = fp_scratch_src(frc);
+   emit_alu(fp, &sub, FP_ALU_OP_MAD, FP_FORM_SUB);
+}
+
 static void
 emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *inst)
 {
+   if (getenv("GRATE_FP_TRACE"))
+      fprintf(stderr, "GRATE FP OP: %s\n",
+              tgsi_get_opcode_name(inst->Instruction.Opcode));
+
    switch (inst->Instruction.Opcode) {
    case TGSI_OPCODE_MOV:
       emit_alu(fp, inst, FP_ALU_OP_MAD, FP_FORM_MOV);
@@ -520,11 +712,54 @@ emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *
       /* CSEL is (rA < 0) ? rB : rC * rD, which is exactly TGSI CMP */
       emit_alu(fp, inst, FP_ALU_OP_CSEL, FP_FORM_MAD);
       break;
+   case TGSI_OPCODE_SEQ:
+      emit_alu_cond(fp, inst, FP_ALU_OP_MAD, FP_FORM_SUB_REV,
+                    FP_CONDITION_EQUAL);
+      break;
+   case TGSI_OPCODE_SNE:
+      emit_sne(fp, inst);
+      break;
+   case TGSI_OPCODE_LRP:
+      emit_lrp(fp, inst);
+      break;
+   /*
+    * The SFU ops below are off unless GRATE_FP_SFU is set. The special
+    * function unit itself is right - sweeping the opcode field against a known
+    * input reproduces RCP, RSQ, LG2, SQRT and FRC to the last bit - and a
+    * shader that does nothing but one of them gives exactly the answer
+    * softpipe does. What is not right yet is getting the answer back out when
+    * the shader does anything else as well: as soon as an ordinary ALU
+    * instruction shares the program, the MFU's result reads back as zero.
+    * That is a scheduling hazard between the MFU and ALU stages, not the maths.
+    * Silently wrong pixels are worse than an honest "unimplemented", so this
+    * stays behind a switch until the hazard is understood.
+    */
+   case TGSI_OPCODE_RCP:
+      if (!getenv("GRATE_FP_SFU")) goto unimplemented;
+      emit_sfu(fp, FP_SFU_OP_RCP, inst, true, fp->num_temps, 0, false);
+      break;
+   case TGSI_OPCODE_FRC:
+      if (!getenv("GRATE_FP_SFU")) goto unimplemented;
+      emit_sfu(fp, FP_SFU_OP_FRC, inst, false, fp->num_temps, 0, false);
+      break;
+   case TGSI_OPCODE_RSQ:
+      if (!getenv("GRATE_FP_SFU")) goto unimplemented;
+      emit_sfu(fp, FP_SFU_OP_RSQ, inst, true, fp->num_temps, 0, false);
+      break;
+   case TGSI_OPCODE_SQRT:
+      if (!getenv("GRATE_FP_SFU")) goto unimplemented;
+      emit_sfu(fp, FP_SFU_OP_SQRT, inst, true, fp->num_temps, 0, false);
+      break;
+   case TGSI_OPCODE_FLR:
+      if (!getenv("GRATE_FP_SFU")) goto unimplemented;
+      emit_flr(fp, inst);
+      break;
    case TGSI_OPCODE_TEX:
       emit_tex(fp, inst);
       break;
 
    default:
+   unimplemented:
       fprintf(stderr, "GRATE FRAG TGSI UNIMPLEMENTED: 0x%02x (%s)\n",
               inst->Instruction.Opcode,
               tgsi_get_opcode_name(inst->Instruction.Opcode));
@@ -571,6 +806,9 @@ emit_tgsi_declaration(struct grate_fp_shader *fp, const struct tgsi_full_declara
    case TGSI_FILE_INPUT:
       emit_tgsi_input(fp, decl);
       break;
+   case TGSI_FILE_TEMPORARY:
+      fp->num_temps = MAX2(fp->num_temps, decl->Range.Last + 1);
+      break;
    }
 }
 
@@ -582,7 +820,11 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
    list_inithead(&fp->mfu_instructions);
 
 
+   if (getenv("GRATE_FP_TRACE"))
+      tgsi_dump(tgsi->Tokens, 0);
+
    fp->num_immediates = 0;
+   fp->num_temps = 0;
    fp->tex_temp = -1;
    fp->info.num_inputs = 0;
    fp->info.color_input = -1;

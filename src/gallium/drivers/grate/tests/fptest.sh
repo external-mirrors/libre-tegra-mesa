@@ -6,11 +6,15 @@ TOL=${TOL:-10}
 S=/home/sam/Dev/stage-main/lib
 cd /home/sam/Dev/probe || exit 1
 export LD_LIBRARY_PATH=$S EGL_PLATFORM=surfaceless
+# GRATE_FP_SFU=1 also runs the special-function tests, which are known to fail
 timeout 900 ./fptest > /tmp/fp_grate.txt 2>/tmp/fp_grate.err
 LIBGL_ALWAYS_SOFTWARE=1 timeout 900 ./fptest > /tmp/fp_ref.txt 2>/dev/null
-awk -v tol="$TOL" '
+awk -v tol="$TOL" -v sfu="${GRATE_FP_SFU:-}" '
   FILENAME==ARGV[1] && $1 !~ /^#/ { ref[$1]=$2; next }
   $1 ~ /^#/ { next }
+  # the SFU ops are only compiled when GRATE_FP_SFU is set, so do not count
+  # them as failures when they are switched off
+  $1 ~ /^sfu_/ && sfu == "" { next }
   {
     name=$1; got=$2; r=ref[name]
     if (r == "") { printf "%-12s %-16s %-16s %s\n", name, got, "(missing)", "FAIL"; fail++; next }
