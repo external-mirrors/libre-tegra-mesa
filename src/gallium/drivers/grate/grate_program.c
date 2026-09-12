@@ -233,8 +233,20 @@ grate_create_fs_state(struct pipe_context *pcontext,
    PUSH(host1x_opcode_imm(REG_TGR3D_AT_INST_OFFSET, 0));
    PUSH(host1x_opcode_imm(REG_TGR3D_ALU_INST_OFFSET, 0));
 
+   /*
+    * These were asserts, which the packaged build compiles out with
+    * b_ndebug, so an oversized program quietly wrote schedule fields that do
+    * not fit their 6 bits and handed the GPU a malformed stream. Say so
+    * loudly instead: a wrong picture is recoverable, a hung gr3d on a Tegra 3
+    * takes the machine with it.
+    */
    int num_fp_instrs = list_length(&fp.fp_instructions);
-   assert(num_fp_instrs < 64);
+   if (num_fp_instrs >= 64) {
+      fprintf(stderr, "GRATE FRAG: %d instructions exceeds the 63 the pixel "
+                      "sequencer can address; this shader will render wrong\n",
+              num_fp_instrs);
+      num_fp_instrs = 63;
+   }
 
    /*
     * pseq_to_dw_exec_nb is the number of DW executions, not the instruction
@@ -274,7 +286,11 @@ grate_create_fs_state(struct pipe_context *pcontext,
       PUSH(grate_fp_pack_sched(&instr->mfu_sched));
 
    int num_mfu_instrs = list_length(&fp.mfu_instructions);
-   assert(num_mfu_instrs < 64); // TODO: not sure if this is really correct
+   if (num_mfu_instrs >= 64) {
+      fprintf(stderr, "GRATE FRAG: %d MFU instructions exceeds the 63 that fit "
+                      "in a schedule address\n", num_mfu_instrs);
+      num_mfu_instrs = 63;
+   }
 
    PUSH(host1x_opcode_nonincr(REG_TGR3D_AT_INST_DATA_LO, num_mfu_instrs * 2));
    list_for_each_entry(struct fp_mfu_instr, instr, &fp.mfu_instructions, link) {
