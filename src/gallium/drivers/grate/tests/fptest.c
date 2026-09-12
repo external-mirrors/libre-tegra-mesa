@@ -51,6 +51,7 @@ static const struct testcase tests[] = {
    { "tex_c11",     "uniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, vec2(0.93,0.93)); }", 0, 1 },
    { "tex_big",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 3 },
    { "tex_sub",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 4 },
+   { "tex_500",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 5 },
 };
 
 static GLuint compile(GLenum type, const char *src, char *log, size_t logsz)
@@ -154,6 +155,25 @@ int main(void)
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
    }
 
+   /* 500x400, the size weston-image's toplevel surface uses: 500*4 = 2000
+    * bytes per row, which is not a multiple of 32 */
+   GLuint tex_500 = 0;
+   glGenTextures(1, &tex_500);
+   glBindTexture(GL_TEXTURE_2D, tex_500);
+   {
+      static unsigned char b5[500*400*4];
+      for (int y = 0; y < 400; y++)
+         for (int x = 0; x < 500; x++) {
+            unsigned char *p = b5 + (y*500 + x)*4;
+            p[0] = (x*255)/500; p[1] = (y*255)/400; p[2] = 64; p[3] = 255;
+         }
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 500, 400, 0, GL_RGBA, GL_UNSIGNED_BYTE, b5);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   }
+
    static const GLfloat verts[] = { -1.0f,-1.0f, 3.0f,-1.0f, -1.0f,3.0f };
 
    for (unsigned i = 0; i < sizeof(tests)/sizeof(tests[0]); i++) {
@@ -180,7 +200,8 @@ int main(void)
          glActiveTexture(GL_TEXTURE0);
          glBindTexture(GL_TEXTURE_2D, t->has_tex == 2 ? tex_npot :
                                         t->has_tex == 3 ? tex_big :
-                                        t->has_tex == 4 ? tex_sub : tex);
+                                        t->has_tex == 4 ? tex_sub :
+                                        t->has_tex == 5 ? tex_500 : tex);
          glUniform1i(glGetUniformLocation(prog, "t"), 0);
       }
 
