@@ -199,8 +199,12 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
        !(template->bind & shared_binds)) {
       resource->pitch = util_next_power_of_two(template->width0) *
                         util_format_get_blocksize(template->format);
+      /*
+       * Give the sampler the rows it addresses within that extent. No
+       * BOTTOM_UP here: that is for render targets, whose origin is bottom
+       * left, and it would flip a texture uploaded top down.
+       */
       height = util_next_power_of_two(height);
-      flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
    } else if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
                                 PIPE_BIND_DEPTH_STENCIL)) {
       if (template->bind & PIPE_BIND_DEPTH_STENCIL)
