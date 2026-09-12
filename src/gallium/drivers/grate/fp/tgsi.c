@@ -91,15 +91,15 @@ fp_alloc_constant(struct fp_emit_ctx *ctx, float v)
  */
 static struct fp_alu_src_operand
 fp_alu_src_tgsi(struct fp_emit_ctx *ctx, const struct tgsi_src_register *src,
-                int slot, int comp)
+                int comp)
 {
    struct fp_alu_src_operand op;
 
    switch (src->File) {
    case TGSI_FILE_INPUT:
       assert(ctx->mfu != NULL);
-      ctx->mfu->var[slot].op = FP_VAR_OP_FP20;
-      ctx->mfu->var[slot].tram_row = src->Index;
+      ctx->mfu->var[comp].op = FP_VAR_OP_FP20;
+      ctx->mfu->var[comp].tram_row = src->Index;
       ctx->fp->info.max_tram_row = MAX2(ctx->fp->info.max_tram_row, src->Index);
       op = fp_alu_src_row(comp);
       break;
@@ -223,7 +223,7 @@ emit_alu(struct grate_fp_shader *fp, const struct tgsi_full_instruction *tinst,
       for (unsigned k = 0; k < tinst->Instruction.NumSrcRegs && k < 3; ++k) {
          const struct tgsi_src_register *sr = &tinst->Src[k].Register;
          const int sw[4] = { sr->SwizzleX, sr->SwizzleY, sr->SwizzleZ, sr->SwizzleW };
-         s[k] = fp_alu_src_tgsi(&ctx, sr, i, sw[i]);
+         s[k] = fp_alu_src_tgsi(&ctx, sr, sw[i]);
       }
 
       struct fp_alu_src_operand rA, rB, rC;
@@ -343,8 +343,13 @@ emit_tgsi_input(struct grate_fp_shader *fp, const struct tgsi_full_declaration *
 
    uint32_t src = LINK_SRC(1);
    uint32_t dst = 0;
+   /*
+    * Unused components stay NOP; grate's reference linker programs read
+    * "LINK fp20, fp20, NOP, NOP, tram0.xyzw, export1" for a vec2 varying.
+    */
    for (int i = 0; i < 4; ++i)
-      dst |= LINK_DST(i, i, LINK_DST_FP20);
+      if (decl->Declaration.UsageMask & (1 << i))
+         dst |= LINK_DST(i, i, LINK_DST_FP20);
 
    fp->info.inputs[fp->info.num_inputs].src = src;
    fp->info.inputs[fp->info.num_inputs].dst = dst;
@@ -371,6 +376,7 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
    list_inithead(&fp->fp_instructions);
    list_inithead(&fp->alu_instructions);
    list_inithead(&fp->mfu_instructions);
+
 
    fp->num_immediates = 0;
    fp->info.num_inputs = 0;
@@ -402,30 +408,37 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
    }
 
    /*
-    * HACK: insert barycentric interpolation setup
-    * This will overwrite instructions in some cases, need proper scheduler
-    * to fix properly
+    * Perspective interpolation needs the barycentric weights computed from
+    * 1/w, and grate's reference shaders fold that into the same MFU
+    * instruction that issues the interpolation:
+    *
+    *    MFU: sfu: rcp r4
+    *         mul0: bar, sfu, bar0
+    *         mul1: bar, sfu, bar1
+    *         ipl: t0.fp20, t0.fp20, NOP, NOP
+    *
+    * A shader with no varyings has no MFU instruction at all, so give it one.
     */
-    if (list_is_empty(&fp->mfu_instructions)) {
-       struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
-       list_inithead(&mfu->link);
-       list_addtail(&mfu->link, &fp->mfu_instructions);
+   if (list_is_empty(&fp->mfu_instructions)) {
+      struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
+      list_inithead(&mfu->link);
+      list_addtail(&mfu->link, &fp->mfu_instructions);
 
-       /* give every pipeline instruction an MFU slot to point at */
-       list_for_each_entry(struct fp_instr, inst, &fp->fp_instructions, link) {
-          inst->mfu_sched.num_instructions = 1;
-          inst->mfu_sched.address = 0;
-       }
-    }
+      list_for_each_entry(struct fp_instr, inst, &fp->fp_instructions, link) {
+         inst->mfu_sched.num_instructions = 1;
+         inst->mfu_sched.address = 0;
+      }
+   }
 
-    struct fp_mfu_instr *first = list_first_entry(&fp->mfu_instructions, struct fp_mfu_instr, link);
-    first->sfu.op = FP_SFU_OP_RCP;
-    first->sfu.reg = 4;
-    first->mul[0].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
-    first->mul[0].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
-    first->mul[0].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_0;
+   struct fp_mfu_instr *first =
+      list_first_entry(&fp->mfu_instructions, struct fp_mfu_instr, link);
 
-    first->mul[1].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
-    first->mul[1].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
-    first->mul[1].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_1;
+   first->sfu.op = FP_SFU_OP_RCP;
+   first->sfu.reg = 4;
+   first->mul[0].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
+   first->mul[0].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
+   first->mul[0].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_0;
+   first->mul[1].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
+   first->mul[1].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
+   first->mul[1].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_1;
 }

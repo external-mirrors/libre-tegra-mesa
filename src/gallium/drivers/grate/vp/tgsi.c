@@ -248,8 +248,8 @@ tgsi_src_to_vp(struct grate_vp_shader *vp, const struct tgsi_src_register *src)
       return src_temp(src->Index, swizzle, negate, absolute);
 
    case TGSI_FILE_IMMEDIATE:
-      /* HACK: allocate uniforms from the top for immediates; need to actually record these */
-      return uniform(1023 - src->Index, swizzle, negate, absolute);
+      /* allocated from the top of the constant file and uploaded with the shader */
+      return uniform(GRATE_VP_IMMEDIATE_SLOT(src->Index), swizzle, negate, absolute);
 
    default:
       UNREACHABLE("unsupported input!");
@@ -331,10 +331,23 @@ grate_tgsi_to_vp(struct grate_vp_shader *vp, struct tgsi_parse_context *tgsi)
 {
    list_inithead(&vp->instructions);
    vp->output_mask = 0;
+   vp->num_immediates = 0;
 
    while (!tgsi_parse_end_of_tokens(tgsi)) {
       tgsi_parse_token(tgsi);
       switch (tgsi->FullToken.Token.Type) {
+      case TGSI_TOKEN_TYPE_IMMEDIATE: {
+         const struct tgsi_full_immediate *imm = &tgsi->FullToken.FullImmediate;
+         if (vp->num_immediates < GRATE_VP_MAX_IMMEDIATES) {
+            for (int i = 0; i < 4; ++i)
+               vp->immediates[vp->num_immediates][i] = imm->u[i].Float;
+            vp->num_immediates++;
+         } else {
+            fprintf(stderr, "GRATE VERTEX: too many immediates\n");
+         }
+         break;
+      }
+
       case TGSI_TOKEN_TYPE_INSTRUCTION:
          if (tgsi->FullToken.FullInstruction.Instruction.Opcode != TGSI_OPCODE_END) {
             struct vp_instr *instr = tgsi_to_vp(vp, &tgsi->FullToken.FullInstruction);

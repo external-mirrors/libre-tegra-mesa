@@ -232,16 +232,23 @@ grate_init_state(struct grate_context *context, uint32_t **ptrp)
 
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_FLUSH, 0));
 
+   /*
+    * MAX_OUT/MIN_OUT bound how many pixels the sequencer keeps in flight.
+    * Leaving them at zero starves it, and only the first EXEC of a
+    * multi-instruction fragment program ever runs. libgrate's
+    * grate_3d_set_alu_buffer_size() uses 0x12c/0xc8 here.
+    */
+   uint32_t pseq_ctl = TGR3D_PSEQ_CTL_MERGE_SPAN_STARTS |
+                       TGR3D_PSEQ_CTL_MERGE_REGISTERS |
+                       TGR3D_PSEQ_CTL_REMOVE_KILLED_PIXELS |
+                       TGR3D_PSEQ_CTL_ALLOW_QID_COLLISIONS |
+                       TGR3D_PSEQ_CTL_MAX_OUT(GRATE_PSEQ_MAX_OUT) |
+                       TGR3D_PSEQ_CTL_MIN_OUT(GRATE_PSEQ_MIN_OUT);
+
    if (soc_id == DRM_TEGRA_SOC_T114)
-      GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_CTL | 0x2200,
-                                                TGR3D_PSEQ_CTL_MERGE_SPAN_STARTS |
-                                                TGR3D_PSEQ_CTL_MERGE_REGISTERS |
-                                                TGR3D_PSEQ_CTL_REMOVE_KILLED_PIXELS));
+      GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_CTL | 0x2200, pseq_ctl));
    else
-      GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_CTL,
-                                                TGR3D_PSEQ_CTL_MERGE_SPAN_STARTS |
-                                                TGR3D_PSEQ_CTL_MERGE_REGISTERS |
-                                                TGR3D_PSEQ_CTL_REMOVE_KILLED_PIXELS));
+      GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_CTL, pseq_ctl));
 
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_TIMEOUT, 0));
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_PSEQ_PC, 0));

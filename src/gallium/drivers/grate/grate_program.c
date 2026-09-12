@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "util/u_dynarray.h"
+#include "util/u_bitcast.h"
 #include "util/u_memory.h"
 
 #include "nir/nir_to_tgsi.h"
@@ -121,7 +122,9 @@ grate_create_vs_state(struct pipe_context *pcontext,
 
    int num_instructions = list_length(&vp.instructions);
    assert(num_instructions < 256);
-   int num_commands = 2 + num_instructions * 4;
+   /* each immediate needs an offset write plus a 4-word vec4 upload */
+   int num_imm_commands = vp.num_immediates * 6;
+   int num_commands = 2 + num_instructions * 4 + num_imm_commands;
    uint32_t *commands = MALLOC(num_commands * sizeof(uint32_t));
    if (!commands) {
       FREE(so);
@@ -139,6 +142,22 @@ grate_create_vs_state(struct pipe_context *pcontext,
       grate_vp_pack(commands + offset, instr, end_of_program);
       offset += 4;
    }
+
+   /*
+    * Upload the immediates into the top of the vertex constant file, where
+    * GRATE_VP_IMMEDIATE_SLOT() told the compiler to read them from.
+    * REG_TGR3D_VPE_CONST_OFFSET counts words, so a vec4 slot is 4 words in.
+    */
+   for (unsigned i = 0; i < vp.num_immediates; ++i) {
+      commands[offset++] =
+         host1x_opcode_imm(REG_TGR3D_VPE_CONST_OFFSET,
+                           GRATE_VP_IMMEDIATE_SLOT(i) * 4);
+      commands[offset++] = host1x_opcode_nonincr(REG_TGR3D_VPE_CONST_DATA, 4);
+      for (int c = 0; c < 4; ++c)
+         commands[offset++] = u_bitcast_f2u(vp.immediates[i][c]);
+   }
+
+   assert(offset == num_commands);
 
    so->blob.commands = commands;
    so->blob.num_commands = num_commands;
@@ -199,9 +218,15 @@ grate_create_fs_state(struct pipe_context *pcontext,
    util_dynarray_init(&buf, NULL);
 
 #define PUSH(x) util_dynarray_append_typed(&buf, uint32_t, (x))
+   /*
+    * This is libgrate's ALU_BUFFER_SIZE register: NUM_ROWS holds
+    * alu_buffer_size - 1, and MAX_QID the number of quads that fit in the
+    * sequencer's output window.
+    */
    PUSH(host1x_opcode_incr(REG_TGR3D_GLOBAL_PIX_ATTR, 1));
-   // TODO: document/convert these values
-   PUSH(0x58000000);
+   PUSH(TGR3D_GLOBAL_PIX_ATTR_NUM_ROWS(GRATE_ALU_BUFFER_SIZE - 1) |
+        TGR3D_GLOBAL_PIX_ATTR_MAX_QID((GRATE_PSEQ_MAX_OUT - 1) /
+                                      (GRATE_ALU_BUFFER_SIZE * 4)));
 
    PUSH(host1x_opcode_imm(REG_TGR3D_PSEQ_QUAD_ID, 0));
    PUSH(host1x_opcode_imm(REG_TGR3D_GLOBAL_INST_OFFSET, 0));
@@ -211,8 +236,18 @@ grate_create_fs_state(struct pipe_context *pcontext,
    int num_fp_instrs = list_length(&fp.fp_instructions);
    assert(num_fp_instrs < 64);
 
+   /*
+    * pseq_to_dw_exec_nb is the number of DW executions, not the instruction
+    * count: grate's reference shaders use 1 for both a one-EXEC and a two-EXEC
+    * program, and each has exactly one "DW: store".
+    */
+   int num_dw_instrs = 0;
+   list_for_each_entry(struct fp_instr, instr, &fp.fp_instructions, link)
+      if (instr->dw.enable)
+         num_dw_instrs++;
+
    PUSH(host1x_opcode_incr(REG_TGR3D_PSEQ_COMMAND_EVEN(0), 1));
-   // TODO: document/convert these values
+   // TODO: document/convert the remaining bits
    PUSH(0x20006000 | num_fp_instrs);
 
    PUSH(host1x_opcode_incr(REG_TGR3D_PSEQ_DWR_IF_STATE, 1));

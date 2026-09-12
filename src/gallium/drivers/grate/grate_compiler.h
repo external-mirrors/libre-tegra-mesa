@@ -7,9 +7,21 @@
 
 struct tgsi_parse_context;
 
+/*
+ * The vertex constant file holds 256 vec4s (REG_TGR3D_VPE_CONST_READ_LIMIT is
+ * programmed to 255). TGSI immediates are allocated from the top of it,
+ * downwards, so they do not collide with the constant buffer at the bottom.
+ */
+#define GRATE_VP_NUM_CONSTS     256
+#define GRATE_VP_MAX_IMMEDIATES 32
+#define GRATE_VP_IMMEDIATE_SLOT(i) (GRATE_VP_NUM_CONSTS - 1 - (i))
+
 struct grate_vp_shader {
    struct list_head instructions;
    uint16_t output_mask;
+
+   float immediates[GRATE_VP_MAX_IMMEDIATES][4];
+   unsigned num_immediates;
 };
 
 struct grate_fp_info {

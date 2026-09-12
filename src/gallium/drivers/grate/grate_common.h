@@ -47,4 +47,14 @@
       printf("GRATE: %s()\n", __func__); \
 } while (0)
 
+
+/*
+ * Pixel-sequencer output window, matching libgrate. MAX_QID in
+ * REG_TGR3D_GLOBAL_PIX_ATTR is derived from the same figure:
+ * (GRATE_PSEQ_MAX_OUT - 1) / (alu_buffer_size * 4).
+ */
+#define GRATE_PSEQ_MAX_OUT   0x12c
+#define GRATE_PSEQ_MIN_OUT   0x0c8
+#define GRATE_ALU_BUFFER_SIZE 1
+
 #endif // GRATE_COMMON_H
