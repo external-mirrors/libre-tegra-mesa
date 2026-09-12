@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include <math.h>
 
 #include "util/format/u_format.h"
@@ -53,6 +55,9 @@ static void grate_add_render_target(struct grate_context *context,
    }
    struct grate_resource *res = grate_resource(ref->texture);
    uint32_t rt_params;
+
+   if (ref->texture->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET))
+      context->framebuffer.scanout = true;
    
    if (grate_debug & GRATE_DEBUG_TRACE)
       fprintf(stderr, "GRATE RT: pipe_format=%s hw_format=%d\n",
@@ -71,6 +76,7 @@ static void
 grate_set_framebuffer_state(struct pipe_context *pcontext,
                             const struct pipe_framebuffer_state *framebuffer)
 {
+   grate_context(pcontext)->framebuffer.scanout = false;
    struct grate_context *context = grate_context(pcontext);
    struct pipe_framebuffer_state *cso = &context->framebuffer.base;
    context->framebuffer.rt_mask = 0;
@@ -154,6 +160,11 @@ grate_set_viewport_states(struct pipe_context *pcontext,
    context->guardband[3] = u_bitcast_f2u(6.99);
 
    context->y_invert = viewports[0].scale[1] < 0.0f;
+
+   if (getenv("GRATE_VP_TRACE"))
+      fprintf(stderr, "grate: viewport translate=(%.1f,%.1f) scale=(%.1f,%.1f) y_invert=%d\n",
+              viewports[0].translate[0], viewports[0].translate[1],
+              viewports[0].scale[0], viewports[0].scale[1], context->y_invert);
 }
 
 static void
@@ -709,12 +720,6 @@ emit_textures(struct grate_context *context, uint32_t **ptrp)
          hi |= TGR3D_TEX_TEXDESC_HI_WIDTH(width);
          hi |= TGR3D_TEX_TEXDESC_HI_HEIGHT(height);
 
-         /*
-          * FIXME: the last rows of a non-power-of-two texture sample as zero
-          * (tests/fptest tex_npot, a 5x3 texture). Programming NPOT_AUX with
-          * the enclosing power-of-two extent does not help, so the sampler
-          * wants something else here that is not documented.
-          */
       }
 
       if (grate_debug & GRATE_DEBUG_TRACE)
@@ -741,7 +746,25 @@ static void
 emit_viewport(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
-   grate_stream_push_words(stream, ptrp, context->viewport, 10, 0);
+   uint32_t vp[10];
+
+   memcpy(vp, context->viewport, sizeof(vp));
+
+   /*
+    * Mesa flips the viewport for a window system framebuffer by handing over
+    * a negative Y scale, because it assumes GL's bottom left origin. This
+    * hardware rasterises top down, so for a buffer that is scanned out the
+    * flip has to be taken back off or the display shows the frame upside
+    * down. An offscreen target is unaffected: it is read back through GL,
+    * where the flip is what makes it come out the right way up.
+    */
+   if (context->framebuffer.scanout) {
+      float sy = u_bitcast_u2f(vp[5]);
+      if (sy < 0.0f)
+         vp[5] = u_bitcast_f2u(-sy);
+   }
+
+   grate_stream_push_words(stream, ptrp, vp, 10, 0);
 }
 
 static void

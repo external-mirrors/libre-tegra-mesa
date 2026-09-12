@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
@@ -85,6 +87,15 @@ grate_resource_transfer_map(struct pipe_context *pcontext,
 
    if (usage & PIPE_MAP_DIRECTLY)
       return NULL;
+
+   /*
+    * Nothing records which resource a submitted job touched, so the only safe
+    * thing is to let everything already submitted land before handing out a
+    * CPU pointer. Otherwise a readback races the GPU still writing the render
+    * target, which is what made large frames come back half drawn.
+    */
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
+      grate_context_flush_streams(context);
 
    ptrans = slab_alloc(&context->transfer_pool);
    if (!ptrans)
@@ -182,38 +193,74 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
    resource->tiled = 0;
 
    /*
-    * A texture descriptor carries no stride: the sampler derives it from the
-    * power-of-two extent enclosing the width, so a sampled surface has to be
-    * allocated that wide, or every row is read at a growing offset and the
-    * image skews. Measured on a 500x400 texture the drift is 32 bytes per
-    * row, which is exactly next_pot(500)*4 - align(500*4, 32).
+    * A texture descriptor carries no stride. For a power-of-two texture the
+    * sampler takes it from LOG2_WIDTH, i.e. the natural pitch; for any other
+    * size it is described by WIDTH/HEIGHT and the stride is the width rounded
+    * up to GRATE_TEXTURE_PITCH_ALIGN. Allocate to match or every row is read
+    * at a growing offset and the image skews. The alignment was found by
+    * sweeping it against tests/fptest, which only passes in full at 64.
     *
     * Buffers anyone outside the driver can see keep the stride the display
     * controller and importers agreed on instead, even though that makes them
     * sample incorrectly: changing it corrupts scanout.
     */
-   const unsigned shared_binds = PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
-                                 PIPE_BIND_SHARED | PIPE_BIND_LINEAR;
+   /*
+    * Everything the GPU touches uses the same row stride rule, so scanout and
+    * sampling can share a buffer: round the pitch up to
+    * GRATE_TEXTURE_PITCH_ALIGN. A power-of-two texture is described to the
+    * sampler by LOG2_WIDTH/LOG2_HEIGHT and keeps its natural pitch. The pitch
+    * chosen here is the one handed to KMS by resource_get_handle(), so the
+    * display controller follows along.
+    */
+   bool pot = util_is_power_of_two_or_zero(template->width0) &&
+              util_is_power_of_two_or_zero(template->height0);
 
-   if ((template->bind & PIPE_BIND_SAMPLER_VIEW) &&
-       !(template->bind & shared_binds)) {
-      resource->pitch = util_next_power_of_two(template->width0) *
-                        util_format_get_blocksize(template->format);
-      /*
-       * Give the sampler the rows it addresses within that extent. No
-       * BOTTOM_UP here: that is for render targets, whose origin is bottom
-       * left, and it would flip a texture uploaded top down.
-       */
-      height = util_next_power_of_two(height);
-   } else if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
-                                PIPE_BIND_DEPTH_STENCIL)) {
-      if (template->bind & PIPE_BIND_DEPTH_STENCIL)
-         resource->pitch = align(resource->pitch, 256);
-      else
-         resource->pitch = align(resource->pitch, 32);
-
+   if (template->bind & PIPE_BIND_DEPTH_STENCIL) {
+      resource->pitch = align(resource->pitch, 256);
       flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
+   } else if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
+                                PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SHARED |
+                                PIPE_BIND_SAMPLER_VIEW)) {
+      if (!pot)
+         resource->pitch = align(resource->pitch, GRATE_TEXTURE_PITCH_ALIGN);
+
+      /*
+       * The sampler addresses rows within the power-of-two extent enclosing
+       * the height, not just the visible ones, and reading past the end of
+       * the object faults the SMMU (tegra-mc reports texsrd2 page faults).
+       * Back those rows with memory; the descriptor still describes the
+       * visible size. This applies to a scanout buffer too, since the
+       * compositor samples its own output.
+       */
+      bool scanout = template->bind & (PIPE_BIND_SCANOUT |
+                                       PIPE_BIND_DISPLAY_TARGET);
+
+      if ((template->bind & PIPE_BIND_SAMPLER_VIEW) && !scanout)
+         height = util_next_power_of_two(height);
+
+      /*
+       * BOTTOM_UP only for a target that is not sampled: it matches GL's
+       * bottom left origin, but on a texture uploaded top down it flips it.
+       */
+      /*
+       * BOTTOM_UP matches GL's bottom left origin, which is what a scanout
+       * buffer and a plain render target want. A sampled texture is uploaded
+       * top down, so flipping it would stand the image on its head - unless
+       * it is also being scanned out, where the display wins.
+       *
+       * It also means the image ends at the last allocated row, so a scanned
+       * out buffer must not have its height padded: the padding would push
+       * the visible rows off the top.
+       */
+      if (scanout || !(template->bind & PIPE_BIND_SAMPLER_VIEW))
+         flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
    }
+
+   if (getenv("GRATE_RES_TRACE"))
+      fprintf(stderr, "grate: RES %4ux%-4u bind=0x%-5x pitch=%-6u rows=%-5u fmt=%s\n",
+              template->width0, template->height0, template->bind,
+              resource->pitch, height,
+              util_format_short_name(template->format));
 
    if (template->target != PIPE_BUFFER) {
       /* pick pixel-format */
@@ -267,6 +314,11 @@ grate_screen_resource_from_handle(struct pipe_screen *pscreen,
       goto fail;
 
    resource->pitch = handle->stride;
+   if (getenv("GRATE_RES_TRACE"))
+      fprintf(stderr, "grate: IMPORT %ux%u stride=%u (sampler wants %u)\n",
+              template->width0, template->height0, handle->stride,
+              util_next_power_of_two(template->width0) *
+              util_format_get_blocksize(template->format));
 
    format = grate_pixel_format(template->format);
    assert(format >= 0);
@@ -560,7 +612,13 @@ grate_clear_depth_stencil(struct pipe_context *pipe,
 static void
 grate_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
 {
-   //TODO grate_unimplemented();
+   /*
+    * Called when a resource is about to be handed to the window system - for
+    * weston, the buffer it is about to scan out. Nothing else waits for the
+    * GPU on that path, so without this the compositor flips a frame that is
+    * still being drawn, and the display shows part of the previous one.
+    */
+   grate_context_flush_streams(grate_context(ctx));
 }
 
 void

@@ -15,6 +15,7 @@
 struct grate_framebuffer_state {
    struct pipe_framebuffer_state base;
    int num_rts;
+   bool scanout;      /* a render target is being scanned out */
    struct grate_bo *rt_bos[REG_TGR3D_GLOBAL_SURFDESC_LENGTH];
    uint32_t rt_params[REG_TGR3D_GLOBAL_SURFDESC_LENGTH];
    uint32_t rt_mask;
@@ -64,6 +65,9 @@ grate_context(struct pipe_context *context)
 {
    return (struct grate_context *)context;
 }
+
+void
+grate_context_flush_streams(struct grate_context *context);
 
 struct pipe_context *
 grate_screen_context_create(struct pipe_screen *pscreen,

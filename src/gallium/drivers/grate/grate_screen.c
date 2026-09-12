@@ -401,7 +401,9 @@ grate_screen_fence_reference(struct pipe_screen *pscreen,
                              struct pipe_fence_handle **ptr,
                              struct pipe_fence_handle *fence)
 {
-   grate_unimplemented();
+   /* no fence objects: flushes are synchronous */
+   if (ptr)
+      *ptr = fence;
 }
 
 static bool
@@ -410,8 +412,8 @@ grate_screen_fence_finish(struct pipe_screen *screen,
                           struct pipe_fence_handle *fence,
                           uint64_t timeout)
 {
-   grate_unimplemented();
-   return false;
+   /* flushes are synchronous, so anything fenced has already landed */
+   return true;
 }
 
 static const uint64_t grate_available_modifiers[] = {

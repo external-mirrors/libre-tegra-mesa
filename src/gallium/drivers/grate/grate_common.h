@@ -64,4 +64,10 @@
 #define GRATE_FP_UNIFORM_BASE  32
 #define GRATE_FP_NUM_UNIFORMS  32
 
+/* how long to wait for a submitted job, in nanoseconds */
+#define GRATE_JOB_TIMEOUT_NS 1000000000ull
+
+/* row stride the texture sampler assumes, in bytes */
+#define GRATE_TEXTURE_PITCH_ALIGN 64
+
 #endif // GRATE_COMMON_H

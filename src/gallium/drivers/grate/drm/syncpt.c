@@ -82,11 +82,22 @@ drm_tegra_fence_wait(struct drm_tegra_fence *fence, unsigned long timeout)
     memset(&args, 0, sizeof(args));
     args.id = fence->syncpt;
     args.thresh = fence->value;
-    /* legacy ioctl takes a relative timeout in ms; 0xffffffff means forever */
-    args.timeout = timeout / 1000000;
 
-    err = drmCommandWriteRead(fence->drm->fd, DRM_TEGRA_SYNCPT_WAIT, &args,
-                              sizeof(args));
+    /*
+     * The caller's timeout is in nanoseconds, the legacy ioctl takes
+     * milliseconds. Round up, so a sub-millisecond request still waits a
+     * whole tick rather than collapsing to zero and returning immediately.
+     */
+    if (timeout == 0)
+        args.timeout = 0;
+    else
+        args.timeout = (timeout + 999999ul) / 1000000ul;
+
+    do {
+        err = drmCommandWriteRead(fence->drm->fd, DRM_TEGRA_SYNCPT_WAIT, &args,
+                                  sizeof(args));
+    } while (err == -EINTR || err == -EAGAIN);
+
     if (err < 0)
         return err;
 

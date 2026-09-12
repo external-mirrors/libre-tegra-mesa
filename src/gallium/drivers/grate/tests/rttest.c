@@ -3,6 +3,9 @@
  * pbuffer cannot. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 static const char *vs="attribute vec2 pos;varying vec2 p;void main(){p=pos*0.5+0.5;gl_Position=vec4(pos,0.0,1.0);}";
@@ -48,14 +51,21 @@ int main(int argc,char**argv){
     }
     return 0;
   }
-  if (argc>3) {   /* scan mode: report the last row that rendered */
-    int last=-1;
+  if (argc>3) {   /* scan: first row whose value is wrong, read at mid width */
     unsigned char q[4];
-    for (int y=0;y<H;y++){ glReadPixels(4,y,1,1,GL_RGBA,GL_UNSIGNED_BYTE,q);
-       if (q[0]||q[1]) last=y; }
-    printf("rt %dx%d: last rendered row = %d\n", W, H, last);
+    int x = W/2, bad = -1;
+    int want_r = (int)((x + 0.5) / W * 255.0 + 0.5);
+    for (int y=0;y<H;y++){
+      glReadPixels(x,y,1,1,GL_RGBA,GL_UNSIGNED_BYTE,q);
+      int want_g = (int)((y + 0.5) / H * 255.0 + 0.5);
+      if (abs((int)q[0]-want_r) > 8 || abs((int)q[1]-want_g) > 8) { bad = y; break; }
+    }
+    if (bad < 0) printf("rt %dx%d: all %d rows correct\n", W, H, H);
+    else printf("rt %dx%d: first wrong row = %d of %d\n", W, H, bad, H);
     return 0;
   }
+  if (getenv("RT_SLEEP")) { glFinish(); usleep(atoi(getenv("RT_SLEEP")) * 1000); }
+  if (getenv("RT_WARM")) { unsigned char w[4]; glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,w); }
   printf("rt %dx%d:", W, H);
   int pts[5][2]={{W/8,H/8},{W/2,H/8},{W/8,H/2},{W/2,H/2},{W-W/8,H-H/8}};
   for(int k=0;k<5;k++){unsigned char q[4];glReadPixels(pts[k][0],pts[k][1],1,1,GL_RGBA,GL_UNSIGNED_BYTE,q);

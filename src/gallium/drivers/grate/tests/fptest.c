@@ -45,11 +45,17 @@ static const struct testcase tests[] = {
    { "texture",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 1 },
    { "tex_mul",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv) * vec4(0.5); }", 1, 1 },
    { "tex_npot",    "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 2 },
+   { "tex_5x4",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 7 },
+   { "tex_8x3",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 8 },
+   { "tex_100x50",  "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 9 },
+   { "tex_806x491", "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 10 },
+   { "tex_1366x32", "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 11 },
    { "tex_c00",     "uniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, vec2(0.07,0.07)); }", 0, 1 },
    { "tex_c10",     "uniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, vec2(0.93,0.07)); }", 0, 1 },
    { "tex_c01",     "uniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, vec2(0.07,0.93)); }", 0, 1 },
    { "tex_c11",     "uniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, vec2(0.93,0.93)); }", 0, 1 },
    { "tex_big",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 3 },
+   { "tex_1366",    "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 6 },
    { "tex_sub",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 4 },
    { "tex_500",     "varying vec2 uv;\nuniform sampler2D t;\nvoid main(){ gl_FragColor = texture2D(t, uv); }", 1, 5 },
 };
@@ -174,6 +180,44 @@ int main(void)
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
    }
 
+   /* 1366x768: weston's desktop background surface */
+   GLuint tex_1366 = 0;
+   glGenTextures(1, &tex_1366);
+   glBindTexture(GL_TEXTURE_2D, tex_1366);
+   {
+      unsigned char *b = malloc(1366*768*4);
+      for (int y = 0; y < 768; y++)
+         for (int x = 0; x < 1366; x++) {
+            unsigned char *p = b + (y*1366 + x)*4;
+            p[0] = (x*255)/1366; p[1] = (y*255)/768; p[2] = 64; p[3] = 255;
+         }
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1366, 768, 0, GL_RGBA, GL_UNSIGNED_BYTE, b);
+      free(b);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   }
+
+   /* solid-colour textures at assorted power-of-two / non-power-of-two sizes */
+   GLuint tex_alt[5] = {0,0,0,0,0};
+   {
+      static const int dims[5][2] = { {5,4}, {8,3}, {100,50}, {806,491}, {1366,32} };
+      glGenTextures(5, tex_alt);
+      for (int i = 0; i < 5; i++) {
+         int w = dims[i][0], h = dims[i][1];
+         unsigned char *b = malloc(w*h*4);
+         for (int k = 0; k < w*h; k++) { b[k*4+0]=32; b[k*4+1]=192; b[k*4+2]=255; b[k*4+3]=255; }
+         glBindTexture(GL_TEXTURE_2D, tex_alt[i]);
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, b);
+         free(b);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      }
+   }
+
    static const GLfloat verts[] = { -1.0f,-1.0f, 3.0f,-1.0f, -1.0f,3.0f };
 
    for (unsigned i = 0; i < sizeof(tests)/sizeof(tests[0]); i++) {
@@ -200,6 +244,12 @@ int main(void)
          glActiveTexture(GL_TEXTURE0);
          glBindTexture(GL_TEXTURE_2D, t->has_tex == 2 ? tex_npot :
                                         t->has_tex == 3 ? tex_big :
+                                        t->has_tex == 7 ? tex_alt[0] :
+                                        t->has_tex == 8 ? tex_alt[1] :
+                                        t->has_tex == 9 ? tex_alt[2] :
+                                        t->has_tex == 10 ? tex_alt[3] :
+                                        t->has_tex == 11 ? tex_alt[4] :
+                                        t->has_tex == 6 ? tex_1366 :
                                         t->has_tex == 4 ? tex_sub :
                                         t->has_tex == 5 ? tex_500 : tex);
          glUniform1i(glGetUniformLocation(prog, "t"), 0);
