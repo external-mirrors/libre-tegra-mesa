@@ -41,15 +41,31 @@ struct fp_nir_ctx {
    /* varying (tram row, component) -> the temporary holding it */
    int varying_slot[16][4];
 
-   /* copies of varyings interpolated by the instruction being built */
-   unsigned keep_comp[4];
-   unsigned keep_slot[4];
-   unsigned keep_row[4];
+   /*
+    * Values that only exist during the instruction being built - an
+    * interpolated varying, a TEX result - copied into a temporary so that a
+    * later instruction can still read them. Each entry says where to read the
+    * value from, which slot keeps it and where to record that slot.
+    */
+   struct {
+      struct fp_alu_src_operand src;
+      unsigned slot;
+      int *commit;
+   } keep[8];
    unsigned num_keep;
 
    /* varyings interpolated by the instruction being built are still in their
     * row register, which is what this instruction must read */
    int cur_row[16][4];
+
+   /*
+    * TEX writes its result into R2-R3, and the fetch issued by the previous
+    * instruction is the only one those registers hold: a shader reading the
+    * same texel a few instructions later gets whatever is there by then. The
+    * result is kept in temporaries the same way an interpolated varying is.
+    */
+   const nir_def *tex_def;
+   int *tex_slot;
 
    /* operations gathered for the instruction being built */
    /* slot reuse: a slot goes back on the free list once the value it holds
@@ -87,7 +103,7 @@ fp_reg_for_slot(struct fp_nir_ctx *ctx, unsigned slot)
 static unsigned
 fp_alloc_slot(struct fp_nir_ctx *ctx)
 {
-   if (ctx->num_free > 0)
+   if (ctx->num_free > 0 && !getenv("GRATE_FS_NORA"))
       return ctx->free_slot[--ctx->num_free];
    return ctx->num_slots++;
 }
@@ -214,10 +230,12 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
           * instruction does not give the same answer, so a component read in
           * two instructions would otherwise come back as two different values.
           */
-         if (row < 16 && comp < 4 && ctx->num_keep < 4) {
-            ctx->keep_comp[ctx->num_keep] = comp;
-            ctx->keep_row[ctx->num_keep] = row;
-            ctx->keep_slot[ctx->num_keep] = fp_alloc_slot(ctx);
+         if (row < 16 && comp < 4 && ctx->num_keep < ARRAY_SIZE(ctx->keep)) {
+            struct fp_alu_src_operand from = { .index = comp };
+
+            ctx->keep[ctx->num_keep].src = from;
+            ctx->keep[ctx->num_keep].slot = fp_alloc_slot(ctx);
+            ctx->keep[ctx->num_keep].commit = &ctx->varying_slot[row][comp];
             ctx->num_keep++;
             ctx->cur_row[row][comp] = comp;
          }
@@ -249,8 +267,24 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
       break;
    }
 
-   case nir_instr_type_tex:
-      return fp_src_tex(comp);
+   case nir_instr_type_tex: {
+      int *slot = &ctx->tex_slot[src.ssa->index * 4 + comp];
+
+      /* fetched by the previous instruction: R2-R3 still hold it, and this is
+       * the only instruction in which that is true */
+      if (ctx->tex_def == src.ssa)
+         return fp_src_tex(comp);
+
+      if (*slot >= 0) {
+         op.index = fp_reg_for_slot(ctx, *slot);
+         op.datatype = FP_DATATYPE_FP20;
+         return op;
+      }
+
+      fprintf(stderr, "GRATE FRAG: texture result read after R2-R3 was "
+                      "overwritten\n");
+      return fp_src_zero();
+   }
 
    case nir_instr_type_alu: {
       nir_alu_instr *a = nir_instr_as_alu(parent);
@@ -337,11 +371,9 @@ fp_emit_packets(struct fp_nir_ctx *ctx, struct fp_alu_instr *slots, unsigned n)
    struct grate_fp_shader *fp = ctx->fp;
 
    for (unsigned i = 0; i < ctx->num_keep && n < FP_MAX_SLOTS; ++i) {
-      struct fp_alu_src_operand row = { 0 };
       struct fp_alu_dst_operand d = { 0 };
 
-      row.index = ctx->keep_comp[i];
-      d.index = fp_reg_for_slot(ctx, ctx->keep_slot[i]);
+      d.index = fp_reg_for_slot(ctx, ctx->keep[i].slot);
       d.write_low_sub_reg = true;
       d.write_high_sub_reg = true;
 
@@ -349,14 +381,15 @@ fp_emit_packets(struct fp_nir_ctx *ctx, struct fp_alu_instr *slots, unsigned n)
          .op = FP_ALU_OP_MAD,
          .condition = FP_CONDITION_ALWAYS,
          .dst = d,
-         .src = { row, fp_src_one(), fp_src_zero(), fp_src_zero() },
+         .src = { ctx->keep[i].src, fp_src_one(), fp_src_zero(),
+                  fp_src_zero() },
       };
    }
    for (unsigned i = 0; i < ctx->num_keep; ++i)
-      ctx->varying_slot[ctx->keep_row[i]][ctx->keep_comp[i]] =
-         ctx->keep_slot[i];
+      *ctx->keep[i].commit = ctx->keep[i].slot;
 
    ctx->num_keep = 0;
+   ctx->tex_def = NULL;
 
    for (unsigned r = 0; r < 16; ++r)
       for (unsigned c = 0; c < 4; ++c)
@@ -896,6 +929,26 @@ fp_emit_tex(struct fp_nir_ctx *ctx, nir_tex_instr *tex)
    inst->tex.src_r2_r3 = false;
 
    list_addtail(&inst->link, &fp->fp_instructions);
+
+   /*
+    * R2-R3 hold this result for the next instruction only, so copy out every
+    * component the shader reads while it still can. Waiting for the first
+    * read is too late: the instruction being built is flushed whenever an
+    * operation depends on one already in it, and the texel is gone by then.
+    */
+   ctx->tex_def = &tex->def;
+
+   unsigned read = nir_def_components_read(&tex->def);
+
+   for (unsigned c = 0; c < 4; ++c) {
+      if (!(read & (1u << c)) || ctx->num_keep >= ARRAY_SIZE(ctx->keep))
+         continue;
+
+      ctx->keep[ctx->num_keep].src = fp_src_tex(c);
+      ctx->keep[ctx->num_keep].slot = fp_alloc_slot(ctx);
+      ctx->keep[ctx->num_keep].commit = &ctx->tex_slot[tex->def.index * 4 + c];
+      ctx->num_keep++;
+   }
 }
 
 static void
@@ -1121,6 +1174,9 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
    ctx.ssa_slot = MALLOC(impl->ssa_alloc * sizeof(int));
    for (unsigned i = 0; i < impl->ssa_alloc; ++i)
       ctx.ssa_slot[i] = -1;
+   ctx.tex_slot = MALLOC(impl->ssa_alloc * 4 * sizeof(int));
+   for (unsigned i = 0; i < impl->ssa_alloc * 4; ++i)
+      ctx.tex_slot[i] = -1;
 
    /*
     * Nineteen scalar registers is not many, so a slot has to go back on the
@@ -1194,6 +1250,7 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
    fp_flush(&ctx);
 
    FREE(ctx.ssa_slot);
+   FREE(ctx.tex_slot);
    FREE(ctx.last_use);
 
    /* store what the ALU built up in R2-R3, once, at the end */
