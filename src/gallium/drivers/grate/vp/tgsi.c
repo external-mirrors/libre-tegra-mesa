@@ -256,6 +256,70 @@ tgsi_src_to_vp(struct grate_vp_shader *vp, const struct tgsi_src_register *src)
    }
 }
 
+/*
+ * The vertex unit fetches at most one attribute and one uniform per
+ * instruction, so anything naming two different uniforms - which is every
+ * matrix times vector - cannot be issued as it stands. Stage the extras
+ * through temporaries first.
+ *
+ * Getting this wrong is not a compile error anyone would notice. The packer
+ * asserts on it, and the packaged build sets b_ndebug, so with the assert
+ * compiled out it quietly packed the wrong index: a uniform matrix transform
+ * then puts the geometry somewhere else entirely, which is exactly why
+ * glxgears came out over-scaled and glmark2's model came out tiny.
+ */
+static void
+vp_stage_extra_fetches(struct grate_vp_shader *vp,
+                       struct tgsi_full_instruction *inst,
+                       struct list_head *out)
+{
+   int uniform = -1, attrib = -1;
+   unsigned staged = 0;
+
+   for (unsigned i = 0; i < inst->Instruction.NumSrcRegs; ++i) {
+      struct tgsi_src_register *src = &inst->Src[i].Register;
+      int *claimed, index;
+
+      switch (src->File) {
+      case TGSI_FILE_CONSTANT:
+         claimed = &uniform; index = src->Index; break;
+      case TGSI_FILE_IMMEDIATE:
+         claimed = &uniform; index = GRATE_VP_IMMEDIATE_SLOT(src->Index); break;
+      case TGSI_FILE_INPUT:
+         claimed = &attrib;  index = src->Index; break;
+      default:
+         continue;
+      }
+
+      if (*claimed < 0 || *claimed == index) {
+         *claimed = index;
+         continue;
+      }
+
+      /* a second distinct fetch of this kind: copy it into a temporary and
+       * read that instead. The swizzle and modifiers stay on the original
+       * use, so the copy is a plain unswizzled move. */
+      unsigned tmp = vp->num_temps + staged++;
+
+      struct tgsi_src_register mov_src = *src;
+      mov_src.SwizzleX = TGSI_SWIZZLE_X;
+      mov_src.SwizzleY = TGSI_SWIZZLE_Y;
+      mov_src.SwizzleZ = TGSI_SWIZZLE_Z;
+      mov_src.SwizzleW = TGSI_SWIZZLE_W;
+      mov_src.Negate = 0;
+      mov_src.Absolute = 0;
+
+      struct vp_instr *mov =
+         emit_packed(emit_vMOV(dst_temp(tmp, TGSI_WRITEMASK_XYZW, false),
+                               tgsi_src_to_vp(vp, &mov_src)),
+                     emit_sNOP());
+      list_addtail(&mov->link, out);
+
+      src->File = TGSI_FILE_TEMPORARY;
+      src->Index = tmp;
+   }
+}
+
 static struct vp_instr *
 tgsi_to_vp(struct grate_vp_shader *vp, const struct tgsi_full_instruction *inst)
 {
@@ -332,6 +396,7 @@ grate_tgsi_to_vp(struct grate_vp_shader *vp, struct tgsi_parse_context *tgsi)
    list_inithead(&vp->instructions);
    vp->output_mask = 0;
    vp->num_immediates = 0;
+   vp->num_temps = 0;
 
    while (!tgsi_parse_end_of_tokens(tgsi)) {
       tgsi_parse_token(tgsi);
@@ -348,10 +413,19 @@ grate_tgsi_to_vp(struct grate_vp_shader *vp, struct tgsi_parse_context *tgsi)
          break;
       }
 
+      case TGSI_TOKEN_TYPE_DECLARATION: {
+         const struct tgsi_full_declaration *decl = &tgsi->FullToken.FullDeclaration;
+         if (decl->Declaration.File == TGSI_FILE_TEMPORARY)
+            vp->num_temps = MAX2(vp->num_temps, decl->Range.Last + 1);
+         break;
+      }
+
       case TGSI_TOKEN_TYPE_INSTRUCTION:
          if (tgsi->FullToken.FullInstruction.Instruction.Opcode != TGSI_OPCODE_END) {
-            struct vp_instr *instr = tgsi_to_vp(vp, &tgsi->FullToken.FullInstruction);
-            if (!instr) 
+            struct tgsi_full_instruction inst = tgsi->FullToken.FullInstruction;
+            vp_stage_extra_fetches(vp, &inst, &vp->instructions);
+            struct vp_instr *instr = tgsi_to_vp(vp, &inst);
+            if (!instr)
                continue;
             list_addtail(&instr->link, &vp->instructions);
          }

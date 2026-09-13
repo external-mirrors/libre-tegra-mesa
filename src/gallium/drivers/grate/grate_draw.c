@@ -395,21 +395,65 @@ grate_draw_vbo(struct pipe_context *pcontext,
    value |= TGR3D_IDX_SET_PRIM_INVALIDATE_DMACACHE;
    value |= TGR3D_IDX_SET_PRIM_INVALIDATE_VTXCACHE;
 
-   GRATE_PUSHBUF_WORD(ptr, host1x_opcode_incr(REG_TGR3D_IDX_SET_PRIM, 1));
-   GRATE_PUSHBUF_WORD(ptr, value);
-   
-   err = grate_stream_push_sync_cond(stream, &ptr, DRM_TEGRA_SYNC_COND_RD_DONE);
-   if (err < 0) {
-      grate_msg("grate_stream_push_sync_cond() failed: %d\n", err);
-      return;
+   /*
+    * VTX_COUNT is a 12 bit field, so at most 4096 vertices go out per draw
+    * packet and anything longer has to be broken up. An assert used to stand
+    * here instead, which the packaged build compiles away with b_ndebug, and
+    * the count then simply wrapped: a mesh of any real size came out as a
+    * handful of stray triangles. glmark2's horse is what found it.
+    *
+    * Where a chunk boundary may fall depends on the primitive. Separate
+    * primitives split on a multiple of their vertex count; a strip has to
+    * repeat the vertices that the next primitive still needs, and a triangle
+    * strip additionally has to advance by an even number or the winding
+    * flips. Fans and loops need the first vertex, or the closing edge, in
+    * every chunk and cannot be split this way.
+    */
+   unsigned total = draws[0].count;
+   unsigned per_prim = 1, overlap = 0, min_verts = 1;
+   bool splittable = true;
+
+   switch (info->mode) {
+   case MESA_PRIM_POINTS:         per_prim = 1; min_verts = 1;            break;
+   case MESA_PRIM_LINES:          per_prim = 2; min_verts = 2;            break;
+   case MESA_PRIM_TRIANGLES:      per_prim = 3; min_verts = 3;            break;
+   case MESA_PRIM_LINE_STRIP:     per_prim = 1; min_verts = 2; overlap = 1; break;
+   case MESA_PRIM_TRIANGLE_STRIP: per_prim = 2; min_verts = 3; overlap = 2; break;
+   default:                       splittable = false;                     break;
    }
 
-   unsigned count = draws[0].count;
-   assert(count > 0 && count < (1 << 11));
-   value  = TGR3D_IDX_DRAW_PRIM_VTX_COUNT(count - 1);
-   value |= TGR3D_IDX_DRAW_PRIM_START_VTX(offset);
-   GRATE_PUSHBUF_WORD(ptr, host1x_opcode_incr(REG_TGR3D_IDX_DRAW_PRIM, 1));
-   GRATE_PUSHBUF_WORD(ptr, value);
+   unsigned chunk_max = GRATE_MAX_DRAW_VERTICES;
+   unsigned advance = chunk_max - overlap;
+   advance -= advance % per_prim;
+
+   if (total > chunk_max && !splittable) {
+      grate_msg("draw of %u vertices in mode %u cannot be split; clamping\n",
+                total, info->mode);
+      total = chunk_max;
+   }
+
+   for (unsigned first = 0; first < total; first += advance) {
+      unsigned count = MIN2(chunk_max, total - first);
+      if (count < min_verts)
+         break;
+
+      GRATE_PUSHBUF_WORD(ptr, host1x_opcode_incr(REG_TGR3D_IDX_SET_PRIM, 1));
+      GRATE_PUSHBUF_WORD(ptr, value);
+
+      err = grate_stream_push_sync_cond(stream, &ptr, DRM_TEGRA_SYNC_COND_RD_DONE);
+      if (err < 0) {
+         grate_msg("grate_stream_push_sync_cond() failed: %d\n", err);
+         return;
+      }
+
+      uint32_t draw  = TGR3D_IDX_DRAW_PRIM_VTX_COUNT(count - 1);
+      draw |= TGR3D_IDX_DRAW_PRIM_START_VTX(offset + first);
+      GRATE_PUSHBUF_WORD(ptr, host1x_opcode_incr(REG_TGR3D_IDX_DRAW_PRIM, 1));
+      GRATE_PUSHBUF_WORD(ptr, draw);
+
+      if (total <= chunk_max)
+         break;
+   }
 
    grate_stream_end(stream, &ptr);
 

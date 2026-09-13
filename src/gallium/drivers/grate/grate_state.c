@@ -41,7 +41,8 @@ grate_set_constant_buffer(struct pipe_context *pcontext, enum mesa_shader_stage 
 }
 
 static void grate_add_render_target(struct grate_context *context,
-                                    const struct pipe_surface *ref) 
+                                    const struct pipe_surface *ref,
+                                    bool is_depth) 
 {
    if (!ref->texture) {
       fprintf(stderr, "%s: texture at %p null!", __func__, ref);
@@ -68,7 +69,18 @@ static void grate_add_render_target(struct grate_context *context,
    
    context->framebuffer.rt_params[context->framebuffer.num_rts] = rt_params;
    context->framebuffer.rt_bos[context->framebuffer.num_rts] = res->bo;
-   context->framebuffer.rt_mask |= 1 << context->framebuffer.num_rts;
+
+   /*
+    * The depth buffer needs a surface slot of its own for its address and
+    * format, but it must not appear in DW_ST_ENABLE: that is the mask of
+    * surfaces the fragment stage stores colour into, and listing depth there
+    * has the shader's colour written over the depth values.
+    */
+   if (is_depth)
+      context->framebuffer.zs_index = context->framebuffer.num_rts;
+   else
+      context->framebuffer.rt_mask |= 1 << context->framebuffer.num_rts;
+
    context->framebuffer.num_rts++;
 }
 
@@ -81,16 +93,18 @@ grate_set_framebuffer_state(struct pipe_context *pcontext,
    struct pipe_framebuffer_state *cso = &context->framebuffer.base;
    context->framebuffer.rt_mask = 0;
    context->framebuffer.num_rts = 0;
+   context->framebuffer.zs_index = -1;
 
    util_copy_framebuffer_state(cso, framebuffer);
 
    for (unsigned int i = 0; i < framebuffer->nr_cbufs; i++) {
-      grate_add_render_target(context, &framebuffer->cbufs[i]);
+      grate_add_render_target(context, &framebuffer->cbufs[i], false);
    }
-   
+
    if (framebuffer->zsbuf.texture) {
-      grate_add_render_target(context, &framebuffer->zsbuf);
+      grate_add_render_target(context, &framebuffer->zsbuf, true);
    }
+
 
    /* prepare the scissor-registers for the non-scissor case */
    context->no_scissor[0]  = host1x_opcode_incr(REG_TGR3D_SU_SCISSOR_X, 2);
@@ -761,7 +775,35 @@ static void
 emit_zsa_state(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
-   grate_stream_push_words(stream, ptrp, context->zsa->commands, context->zsa->num_commands, 0);
+   uint32_t commands[4];
+   int n = context->zsa->num_commands;
+
+   assert(n <= (int)ARRAY_SIZE(commands));
+   memcpy(commands, context->zsa->commands, n * sizeof(commands[0]));
+
+   /*
+    * Which surface holds depth belongs to the framebuffer, not to the depth
+    * state object, so it has to be mixed in here. Left at zero, Z_SURF_PTR
+    * names surface 0 - the colour buffer - and the depth test then reads and
+    * writes depth over the colours. That is what turned every lit scene into
+    * alternating columns of right and wrong pixels.
+    */
+   if (context->framebuffer.zs_index >= 0) {
+      uint32_t surf = TGR3D_QR_Z_TEST_Z_SURF_PTR(context->framebuffer.zs_index);
+      commands[1] |= surf;
+      if (n > 2)
+         commands[3] |= surf;
+   } else {
+      /* no depth buffer bound: nothing to test against or write to */
+      uint32_t off = ~(TGR3D_QR_Z_TEST_Z_ENABLE__MASK |
+                       TGR3D_QR_Z_TEST_QRAST_FB_WRITE__MASK);
+      commands[1] &= off;
+      if (n > 2)
+         commands[3] &= off;
+   }
+
+
+   grate_stream_push_words(stream, ptrp, commands, n, 0);
 }
 
 static void

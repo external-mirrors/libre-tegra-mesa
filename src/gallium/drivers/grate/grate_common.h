@@ -68,6 +68,10 @@
 #define GRATE_JOB_TIMEOUT_NS 1000000000ull
 
 /* row stride the texture sampler assumes, in bytes */
+/* IDX_DRAW_PRIM's VTX_COUNT is a 12 bit field, so this many
+ * vertices go out per draw packet at most */
+#define GRATE_MAX_DRAW_VERTICES 4096
+
 #define GRATE_TEXTURE_PITCH_ALIGN 64
 
 #endif // GRATE_COMMON_H

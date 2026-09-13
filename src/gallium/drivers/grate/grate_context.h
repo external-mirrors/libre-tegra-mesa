@@ -19,6 +19,9 @@ struct grate_framebuffer_state {
    struct grate_bo *rt_bos[REG_TGR3D_GLOBAL_SURFDESC_LENGTH];
    uint32_t rt_params[REG_TGR3D_GLOBAL_SURFDESC_LENGTH];
    uint32_t rt_mask;
+
+   /* surface slot holding the depth buffer, or -1 when there is none */
+   int zs_index;
 };
 
 struct grate_channel {

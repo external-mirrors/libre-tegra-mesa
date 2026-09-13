@@ -22,6 +22,10 @@ struct grate_vp_shader {
 
    float immediates[GRATE_VP_MAX_IMMEDIATES][4];
    unsigned num_immediates;
+
+   /* temporaries the shader declared; scratch for staging extra attribute and
+    * uniform fetches is handed out from just past this */
+   unsigned num_temps;
 };
 
 struct grate_fp_info {
