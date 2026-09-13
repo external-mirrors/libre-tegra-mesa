@@ -41,6 +41,14 @@ fp_alu_src_reg(int index)
 #define GRATE_FP_SPILL_FIRST 5
 #define GRATE_FP_SPILL_COUNT 11
 
+/*
+ * Set when a shader asks for more scalars than the register file has. It is a
+ * file static because fp_temp_reg() is called from places that have no handle
+ * on the shader; grate_tgsi_to_fp() clears it before each translation, and
+ * shader translation is not re-entrant.
+ */
+static bool fp_overflowed;
+
 static unsigned
 fp_temp_reg(unsigned slot)
 {
@@ -52,6 +60,7 @@ fp_temp_reg(unsigned slot)
       return GRATE_FP_SPILL_FIRST + slot;
 
    fprintf(stderr, "GRATE FRAG: out of temporary registers\n");
+   fp_overflowed = true;
    return 16;
 }
 
@@ -763,6 +772,7 @@ emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *
       fprintf(stderr, "GRATE FRAG TGSI UNIMPLEMENTED: 0x%02x (%s)\n",
               inst->Instruction.Opcode,
               tgsi_get_opcode_name(inst->Instruction.Opcode));
+      fp->unsupported = true;
       break;
    }
 }
@@ -825,6 +835,8 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
 
    fp->num_immediates = 0;
    fp->num_temps = 0;
+   fp->unsupported = false;
+   fp_overflowed = false;
    fp->tex_temp = -1;
    fp->info.num_inputs = 0;
    fp->info.color_input = -1;
@@ -852,6 +864,52 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
             emit_tgsi_instr(fp, &tgsi->FullToken.FullInstruction);
          break;
       }
+   }
+
+   /*
+    * A shader we could not fully translate must not reach the GPU. A half
+    * translated program is not merely wrong: gr3d hangs on one, and the
+    * kernel then resets it in a loop until the machine goes down. Throw the
+    * program away and store zeroes instead, so the surface is wrong but the
+    * GPU survives and the log says why.
+    */
+   if (fp->unsupported || fp_overflowed) {
+      fprintf(stderr, "GRATE FRAG: shader not translatable, substituting a "
+                      "stub that writes nothing\n");
+
+      list_for_each_entry_safe(struct fp_instr, i, &fp->fp_instructions, link)
+         FREE(i);
+      list_for_each_entry_safe(struct fp_alu_instr_packet, p,
+                               &fp->alu_instructions, link)
+         FREE(p);
+      list_for_each_entry_safe(struct fp_mfu_instr, m, &fp->mfu_instructions,
+                               link)
+         FREE(m);
+      list_inithead(&fp->fp_instructions);
+      list_inithead(&fp->alu_instructions);
+      list_inithead(&fp->mfu_instructions);
+
+      struct tgsi_dst_register out = { 0 };
+      out.File = TGSI_FILE_OUTPUT;
+      out.Index = 0;
+      out.WriteMask = TGSI_WRITEMASK_XYZW;
+
+      struct fp_instr *inst = CALLOC_STRUCT(fp_instr);
+      list_inithead(&inst->link);
+      struct fp_alu_instr_packet *pkt = CALLOC_STRUCT(fp_alu_instr_packet);
+      list_inithead(&pkt->link);
+      for (int i = 0; i < 4; ++i)
+         pkt->slots[i] = fp_alu_sMOV(fp_alu_dst(&out, i, false),
+                                     fp_alu_src_zero());
+
+      inst->alu_sched.address = 0;
+      inst->alu_sched.num_instructions = 1;
+      inst->dw.enable = 1;
+      inst->dw.index = 0;
+      inst->dw.src_regs = FP_DW_REGS_R2_R3;
+
+      list_addtail(&pkt->link, &fp->alu_instructions);
+      list_addtail(&inst->link, &fp->fp_instructions);
    }
 
    /*

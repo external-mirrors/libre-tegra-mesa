@@ -50,6 +50,11 @@ struct grate_fp_shader {
     * general register; -1 when the shader has none */
    int tex_temp;
 
+   /* set when the shader used something the translator cannot express, so the
+    * program that reaches the GPU is a safe stub rather than a half translated
+    * one */
+   bool unsupported;
+
    /* number of TGSI temporaries the shader declared. Lowering an opcode the
     * hardware has no instruction for needs somewhere to put the intermediate,
     * and those scratch vec4s are handed out from just past this. */
