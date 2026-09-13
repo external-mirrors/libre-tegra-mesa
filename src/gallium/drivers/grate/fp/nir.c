@@ -24,10 +24,12 @@
 #define FP_NUM_GLOBALS 8
 #define FP_SPILL_FIRST 5
 #define FP_SPILL_COUNT 11
+#define FP_MAX_SLOTS   12
 
 struct fp_nir_ctx {
    struct grate_fp_shader *fp;
    int *ssa_slot;
+   unsigned num_ssa;
    unsigned num_slots;
    bool overflow;
 
@@ -42,7 +44,19 @@ struct fp_nir_ctx {
    /* copies of varyings interpolated by the instruction being built */
    unsigned keep_comp[4];
    unsigned keep_slot[4];
+   unsigned keep_row[4];
    unsigned num_keep;
+
+   /* varyings interpolated by the instruction being built are still in their
+    * row register, which is what this instruction must read */
+   int cur_row[16][4];
+
+   /* operations gathered for the instruction being built */
+   struct fp_alu_instr batch[FP_MAX_SLOTS];
+   const nir_def *batch_def[FP_MAX_SLOTS];
+   unsigned num_batch;
+   const nir_def *cur_def;
+   bool writes[64];
 };
 
 static unsigned
@@ -154,14 +168,26 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
           */
          unsigned row = nir_intrinsic_base(intr);
 
-         if (row < 16 && comp < 4 && ctx->varying_slot[row][comp] >= 0) {
+         /* interpolated by the instruction being built: the copy of it does
+          * not exist until this instruction ends, so read the row register */
+         if (row < 16 && comp < 4 && ctx->cur_row[row][comp] >= 0) {
+            op.index = ctx->cur_row[row][comp];
+            return op;
+         }
+
+         if (row < 16 && comp < 4 && ctx->varying_slot[row][comp] >= 0 &&
+             !getenv("GRATE_FS_NOCOPY")) {
             /* already interpolated once; read the copy that was kept */
             op.index = fp_reg_for_slot(ctx, ctx->varying_slot[row][comp]);
             op.datatype = FP_DATATYPE_FP20;
             return op;
          }
 
-         assert(ctx->mfu != NULL);
+         if (!ctx->mfu) {
+            ctx->mfu = CALLOC_STRUCT(fp_mfu_instr);
+            list_inithead(&ctx->mfu->link);
+         }
+
          ctx->mfu->var[comp].op = FP_VAR_OP_FP20;
          ctx->mfu->var[comp].tram_row = row;
          ctx->fp->info.max_tram_row = MAX2(ctx->fp->info.max_tram_row, row);
@@ -173,9 +199,10 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
           */
          if (row < 16 && comp < 4 && ctx->num_keep < 4) {
             ctx->keep_comp[ctx->num_keep] = comp;
-            ctx->varying_slot[row][comp] = ctx->num_slots++;
-            ctx->keep_slot[ctx->num_keep] = ctx->varying_slot[row][comp];
+            ctx->keep_row[ctx->num_keep] = row;
+            ctx->keep_slot[ctx->num_keep] = ctx->num_slots++;
             ctx->num_keep++;
+            ctx->cur_row[row][comp] = comp;
          }
 
          op.index = comp;
@@ -210,6 +237,19 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
 
    case nir_instr_type_alu: {
       nir_alu_instr *a = nir_instr_as_alu(parent);
+
+      /* every source operand carries negate and absolute-value modifiers,
+       * so these never need an instruction of their own */
+      if (a->op == nir_op_fneg || a->op == nir_op_fabs) {
+         struct fp_alu_src_operand s =
+            fp_nir_src(ctx, a->src[0].src, a->src[0].swizzle[comp]);
+
+         if (a->op == nir_op_fneg)
+            s.negate = !s.negate;
+         else
+            s.absolute_value = true;
+         return s;
+      }
 
       /* vecN only gathers: component c is whatever source c names */
       if ((a->op == nir_op_vec2 || a->op == nir_op_vec3 ||
@@ -265,20 +305,21 @@ fp_new_instr(void)
    return inst;
 }
 
+/*
+ * Turn a list of scalar operations into ALU packets and one pipeline
+ * instruction. Embedded constants ride in a packet's fourth slot, so only
+ * three operations fit beside them.
+ *
+ * Any varyings this instruction interpolated are copied into temporaries here,
+ * in the same instruction, so that later instructions can read them: asking
+ * the MFU for the same varying again does not give the same answer.
+ */
 static void
-fp_finish(struct fp_nir_ctx *ctx, struct fp_instr *inst,
-          struct fp_alu_instr_packet *pkt)
+fp_emit_packets(struct fp_nir_ctx *ctx, struct fp_alu_instr *slots, unsigned n)
 {
    struct grate_fp_shader *fp = ctx->fp;
-   unsigned limit = ctx->num_constants > 0 ? 3 : 4;
-   unsigned next = 0;
 
-   while (next < limit && pkt->slots[next].dst.index != 0)
-      next++;
-   if (pkt->slots[0].dst.index == 0 && next == 0)
-      next = 1;
-
-   for (unsigned i = 0; i < ctx->num_keep && next < limit; ++i, ++next) {
+   for (unsigned i = 0; i < ctx->num_keep && n < FP_MAX_SLOTS; ++i) {
       struct fp_alu_src_operand row = { 0 };
       struct fp_alu_dst_operand d = { 0 };
 
@@ -287,23 +328,53 @@ fp_finish(struct fp_nir_ctx *ctx, struct fp_instr *inst,
       d.write_low_sub_reg = true;
       d.write_high_sub_reg = true;
 
-      pkt->slots[next] = (struct fp_alu_instr){
+      slots[n++] = (struct fp_alu_instr){
          .op = FP_ALU_OP_MAD,
          .condition = FP_CONDITION_ALWAYS,
          .dst = d,
          .src = { row, fp_src_one(), fp_src_zero(), fp_src_zero() },
       };
    }
+   for (unsigned i = 0; i < ctx->num_keep; ++i)
+      ctx->varying_slot[ctx->keep_row[i]][ctx->keep_comp[i]] =
+         ctx->keep_slot[i];
+
    ctx->num_keep = 0;
 
-   if (ctx->num_constants > 0) {
-      pkt->has_constants = true;
-      memcpy(pkt->constants, ctx->constants, sizeof(pkt->constants));
+   for (unsigned r = 0; r < 16; ++r)
+      for (unsigned c = 0; c < 4; ++c)
+         ctx->cur_row[r][c] = -1;
+
+   if (n == 0)
+      return;
+
+   unsigned limit = ctx->num_constants > 0 ? 3 : 4;
+   unsigned first = list_length(&fp->alu_instructions);
+   unsigned packets = 0;
+
+   for (unsigned i = 0; i < n; i += limit) {
+      struct fp_alu_instr_packet *pkt = fp_new_packet(fp);
+      unsigned count = MIN2(limit, n - i);
+
+      for (unsigned k = 0; k < count; ++k)
+         pkt->slots[k] = slots[i + k];
+
+      if (ctx->num_constants > 0) {
+         pkt->has_constants = true;
+         memcpy(pkt->constants, ctx->constants, sizeof(pkt->constants));
+      }
+
+      list_addtail(&pkt->link, &fp->alu_instructions);
+      packets++;
    }
 
-   inst->alu_sched.address = list_length(&fp->alu_instructions);
-   inst->alu_sched.num_instructions = 1;
-   list_addtail(&pkt->link, &fp->alu_instructions);
+   if (packets > 3)
+      fprintf(stderr, "GRATE FRAG: %u ALU packets exceeds the 3 the scheduler "
+                      "can issue\n", packets);
+
+   struct fp_instr *inst = fp_new_instr();
+   inst->alu_sched.address = first;
+   inst->alu_sched.num_instructions = packets;
 
    if (ctx->mfu) {
       inst->mfu_sched.address = list_length(&fp->mfu_instructions);
@@ -315,51 +386,90 @@ fp_finish(struct fp_nir_ctx *ctx, struct fp_instr *inst,
 
    ctx->mfu = NULL;
    ctx->num_constants = 0;
+   memset(ctx->writes, 0, sizeof(ctx->writes));
 }
 
-static bool
-fp_src_is_varying(nir_src src)
-{
-   nir_instr *p = nir_def_instr(src.ssa);
-
-   if (p->type == nir_instr_type_intrinsic) {
-      nir_intrinsic_op op = nir_instr_as_intrinsic(p)->intrinsic;
-      return op == nir_intrinsic_load_input ||
-             op == nir_intrinsic_load_interpolated_input;
-   }
-
-   /* vecN only gathers, so look through it */
-   if (p->type == nir_instr_type_alu) {
-      nir_alu_instr *a = nir_instr_as_alu(p);
-      if (a->op == nir_op_vec2 || a->op == nir_op_vec3 ||
-          a->op == nir_op_vec4) {
-         for (unsigned i = 0; i < nir_op_infos[a->op].num_inputs; ++i)
-            if (fp_src_is_varying(a->src[i].src))
-               return true;
-      }
-   }
-
-   return false;
-}
-
-/* a varying source needs an MFU instruction to interpolate it into a row register */
 static void
-fp_need_mfu_for(struct fp_nir_ctx *ctx, nir_src src)
+fp_flush(struct fp_nir_ctx *ctx)
 {
-   if (!fp_src_is_varying(src) || ctx->mfu)
+   if (ctx->num_batch == 0 && !ctx->mfu && ctx->num_keep == 0)
       return;
 
-   ctx->mfu = CALLOC_STRUCT(fp_mfu_instr);
-   list_inithead(&ctx->mfu->link);
+   struct fp_alu_instr slots[FP_MAX_SLOTS];
+   unsigned n = ctx->num_batch;
+
+   memcpy(slots, ctx->batch, n * sizeof(slots[0]));
+   ctx->num_batch = 0;
+   fp_emit_packets(ctx, slots, n);
 }
 
+/*
+ * Gather one operation into the instruction being built. Several scalar
+ * operations share an instruction, which is what keeps a program short: the
+ * interpolated value a varying delivers depends on how many instructions the
+ * program has, so one instruction per operation gives the wrong answer as soon
+ * as a shader does more than a little work.
+ *
+ * An operation that reads what this instruction has already written has to
+ * start a new one, and so does one that no longer fits beside the constants.
+ */
 static void
-fp_need_mfu(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
+fp_gather(struct fp_nir_ctx *ctx, struct fp_alu_instr op)
 {
-   unsigned n = nir_op_infos[alu->op].num_inputs;
+   ctx->batch_def[ctx->num_batch] = ctx->cur_def;
+   ctx->cur_def = NULL;
+   ctx->batch[ctx->num_batch++] = op;
+   if (op.dst.index < 64)
+      ctx->writes[op.dst.index] = true;
+}
 
-   for (unsigned i = 0; i < n; ++i)
-      fp_need_mfu_for(ctx, alu->src[i].src);
+/*
+ * Decide whether the operation about to be translated can join the instruction
+ * being built, before any of its sources are resolved. Resolving first would
+ * be wrong: a source may allocate an embedded constant, and a flush after that
+ * leaves the constant behind in the packet just emitted while the operation
+ * that reads it lands in the next one.
+ *
+ * The ALU issues up to three packets per instruction, and a packet holding
+ * embedded constants has three usable slots, so nine operations always fit.
+ */
+static void
+fp_prepare(struct fp_nir_ctx *ctx, nir_src *srcs, unsigned n)
+{
+   if (ctx->num_batch + ctx->num_keep >= 9) {
+      fp_flush(ctx);
+      return;
+   }
+
+   for (unsigned i = 0; i < n; ++i) {
+      nir_def *def = srcs[i].ssa;
+      nir_instr *p = nir_def_instr(def);
+
+      /* look through vecN, which only gathers */
+      if (p->type == nir_instr_type_alu) {
+         nir_alu_instr *a = nir_instr_as_alu(p);
+         if (a->op == nir_op_fneg || a->op == nir_op_fabs) {
+            fp_prepare(ctx, &a->src[0].src, 1);
+            continue;
+         }
+
+         if (a->op == nir_op_vec2 || a->op == nir_op_vec3 ||
+             a->op == nir_op_vec4) {
+            for (unsigned k = 0; k < nir_op_infos[a->op].num_inputs; ++k)
+               fp_prepare(ctx, &a->src[k].src, 1);
+            continue;
+         }
+      }
+
+      if (def->index >= ctx->num_ssa || ctx->ssa_slot[def->index] < 0)
+         continue;
+
+      unsigned reg = fp_reg_for_slot(ctx, ctx->ssa_slot[def->index]);
+      if (reg < 64 && ctx->writes[reg]) {
+         fp_flush(ctx);
+         return;
+      }
+   }
 }
 
 static struct fp_alu_dst_operand
@@ -391,20 +501,17 @@ static void
 fp_emit_form(struct fp_nir_ctx *ctx, nir_alu_instr *alu, enum fp_alu_op op,
              enum fp_form form, enum fp_condition cond)
 {
-   struct fp_instr *inst = fp_new_instr();
-   struct fp_alu_instr_packet *pkt = fp_new_packet(ctx->fp);
    unsigned n = nir_op_infos[alu->op].num_inputs;
    struct fp_alu_src_operand s[3];
 
-   fp_need_mfu(ctx, alu);
+   for (unsigned i = 0; i < n && i < 3; ++i)
+      fp_prepare(ctx, &alu->src[i].src, 1);
+
+   ctx->cur_def = &alu->def;
 
    for (unsigned i = 0; i < n && i < 3; ++i)
       s[i] = fp_nir_alu_src(ctx, alu, i);
 
-   if (alu->op == nir_op_fneg)
-      s[0].negate = !s[0].negate;
-   if (alu->op == nir_op_fabs)
-      s[0].absolute_value = true;
 
    struct fp_alu_src_operand rA, rB, rC;
    switch (form) {
@@ -419,16 +526,15 @@ fp_emit_form(struct fp_nir_ctx *ctx, nir_alu_instr *alu, enum fp_alu_op op,
    default: UNREACHABLE("bad fragment source form");
    }
 
-   struct fp_alu_instr a = {
+   struct fp_alu_instr out = {
       .op = op,
       .condition = cond,
       .dst = fp_dst_for_def(ctx, &alu->def, alu->op == nir_op_fsat),
       /* src[3] mirrors src[2] so the rD selector stays off */
       .src = { rA, rB, rC, rC },
    };
-   pkt->slots[0] = a;
 
-   fp_finish(ctx, inst, pkt);
+   fp_gather(ctx, out);
 }
 
 /*
@@ -442,10 +548,8 @@ fp_emit_sne(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
    unsigned scratch = ctx->num_slots++;
 
    {
-      struct fp_instr *inst = fp_new_instr();
-      struct fp_alu_instr_packet *pkt = fp_new_packet(ctx->fp);
-
-      fp_need_mfu(ctx, alu);
+         fp_prepare(ctx, &alu->src[0].src, 1);
+      fp_prepare(ctx, &alu->src[1].src, 1);
 
       struct fp_alu_src_operand a = fp_nir_alu_src(ctx, alu, 0);
       struct fp_alu_src_operand b = fp_nir_alu_src(ctx, alu, 1);
@@ -455,34 +559,28 @@ fp_emit_sne(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
       d.write_low_sub_reg = true;
       d.write_high_sub_reg = true;
 
-      a.negate = !a.negate;   /* rC is negated below, so b - a */
-      pkt->slots[0] = (struct fp_alu_instr){
+      a.negate = !a.negate;
+      fp_gather(ctx, (struct fp_alu_instr){
          .op = FP_ALU_OP_MAD,
          .condition = FP_CONDITION_EQUAL,
          .dst = d,
          .src = { b, fp_src_one(), a, a },
-      };
-
-      fp_finish(ctx, inst, pkt);
+      });
    }
 
    {
-      struct fp_instr *inst = fp_new_instr();
-      struct fp_alu_instr_packet *pkt = fp_new_packet(ctx->fp);
       struct fp_alu_src_operand s = { 0 };
 
       s.index = fp_reg_for_slot(ctx, scratch);
       s.datatype = FP_DATATYPE_FP20;
       s.negate = true;
 
-      pkt->slots[0] = (struct fp_alu_instr){
+      fp_gather(ctx, (struct fp_alu_instr){
          .op = FP_ALU_OP_MAD,
          .condition = FP_CONDITION_ALWAYS,
          .dst = fp_dst_for_def(ctx, &alu->def, false),
          .src = { s, fp_src_one(), fp_src_one(), fp_src_one() },
-      };
-
-      fp_finish(ctx, inst, pkt);
+      });
    }
 }
 
@@ -513,10 +611,11 @@ fp_emit_alu(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
    case nir_op_fsat: fp_emit_form(ctx, alu, FP_ALU_OP_MAD, FP_FORM_MOV,
                                   FP_CONDITION_ALWAYS); break;
    /* negation and absolute value are operand modifiers, not instructions */
-   case nir_op_fneg: fp_emit_form(ctx, alu, FP_ALU_OP_MAD, FP_FORM_MOV,
-                                  FP_CONDITION_ALWAYS); break;
-   case nir_op_fabs: fp_emit_form(ctx, alu, FP_ALU_OP_MAD, FP_FORM_MOV,
-                                  FP_CONDITION_ALWAYS); break;
+   case nir_op_fneg:
+   case nir_op_fabs:
+      /* folded into whatever reads them */
+      break;
+
    case nir_op_vec2:
    case nir_op_vec3:
    case nir_op_vec4:
@@ -530,85 +629,94 @@ fp_emit_alu(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
    }
 }
 
+/* look through vecN gathering to the operation that actually produces a component */
+static const nir_def *
+fp_peel(nir_src src, unsigned *comp)
+{
+   nir_instr *p = nir_def_instr(src.ssa);
+
+   if (p->type == nir_instr_type_alu) {
+      nir_alu_instr *a = nir_instr_as_alu(p);
+
+      if ((a->op == nir_op_vec2 || a->op == nir_op_vec3 ||
+           a->op == nir_op_vec4) &&
+          *comp < nir_op_infos[a->op].num_inputs) {
+         unsigned c = a->src[*comp].swizzle[0];
+         nir_src inner = a->src[*comp].src;
+         *comp = c;
+         return fp_peel(inner, comp);
+      }
+   }
+
+   return src.ssa;
+}
+
+/*
+ * Retarget the operation that produced this component at the output register,
+ * instead of letting it write a temporary that a later instruction copies out.
+ * The copy is not just wasted work: it adds an instruction, and a varying's
+ * interpolated value depends on how many instructions the program has.
+ */
+static bool
+fp_fuse_output(struct fp_nir_ctx *ctx, nir_src src, unsigned c)
+{
+   unsigned comp = c;
+   const nir_def *def = fp_peel(src, &comp);
+
+   if (comp != 0 || !list_is_singular(&def->uses))
+      return false;
+
+   for (unsigned i = 0; i < ctx->num_batch; ++i)
+      if (ctx->batch_def[i] == def) {
+         ctx->batch[i].dst = fp_dst_output(c, false);
+         return true;
+      }
+
+   return false;
+}
+
 static void
 fp_emit_store_output(struct fp_nir_ctx *ctx, nir_intrinsic_instr *intr)
 {
-   struct grate_fp_shader *fp = ctx->fp;
    unsigned mask = nir_intrinsic_write_mask(intr);
-   struct fp_alu_instr slots[4];
-   unsigned n = 0;
+   bool fused[4] = { false, false, false, false };
 
-   fp_need_mfu_for(ctx, intr->src[0]);
+   /*
+    * Retarget first, for every component, and only then emit copies for what
+    * is left. Doing it component by component would flush the instruction
+    * being built as soon as one component needed a copy, and every component
+    * after that would have lost the operation it could have been fused into.
+    */
+   for (unsigned c = 0; c < 4; ++c)
+      if (mask & (1u << c))
+         fused[c] = fp_fuse_output(ctx, intr->src[0], c);
 
-   /* resolve every component first: doing so is what decides whether the
-    * packet's fourth slot is spent on embedded constants */
    for (unsigned c = 0; c < 4; ++c) {
-      if (!(mask & (1u << c)))
+      if (!(mask & (1u << c)) || fused[c])
          continue;
 
+      unsigned comp = c;
+      nir_src peeled = nir_src_for_ssa(
+         (nir_def *)fp_peel(intr->src[0], &comp));
+
+      fp_prepare(ctx, &peeled, 1);
+
       struct fp_alu_src_operand src = fp_nir_src(ctx, intr->src[0], c);
-      slots[n++] = (struct fp_alu_instr){
+
+      fp_gather(ctx, (struct fp_alu_instr){
          .op = FP_ALU_OP_MAD,
          .condition = FP_CONDITION_ALWAYS,
          .dst = fp_dst_output(c, false),
          .src = { src, fp_src_one(), fp_src_zero(), fp_src_zero() },
-      };
+      });
    }
-
-   if (n == 0)
-      return;
-
-   /* constants ride in the fourth slot, so only three writes fit beside them */
-   unsigned per_packet = ctx->num_constants > 0 ? 3 : 4;
-   unsigned first = list_length(&fp->alu_instructions);
-   unsigned packets = 0;
-
-   for (unsigned i = 0; i < n; i += per_packet) {
-      struct fp_alu_instr_packet *pkt = fp_new_packet(fp);
-      unsigned count = MIN2(per_packet, n - i);
-
-      for (unsigned k = 0; k < count; ++k)
-         pkt->slots[k] = slots[i + k];
-
-      if (ctx->num_constants > 0) {
-         pkt->has_constants = true;
-         memcpy(pkt->constants, ctx->constants, sizeof(pkt->constants));
-      }
-
-      list_addtail(&pkt->link, &fp->alu_instructions);
-      packets++;
-   }
-
-   if (packets > 3)
-      fprintf(stderr, "GRATE FRAG: %u ALU packets exceeds the 3 the scheduler "
-                      "can issue\n", packets);
-
-   /*
-    * The colour written by the ALU accumulates in R2-R3 across instructions,
-    * so the store belongs on the last one rather than on every write. A
-    * shader that writes its components in separate statements otherwise
-    * stores each partial result, and only the components of the final store
-    * are right.
-    */
-   struct fp_instr *inst = fp_new_instr();
-   inst->alu_sched.address = first;
-   inst->alu_sched.num_instructions = packets;
-
-   if (ctx->mfu) {
-      inst->mfu_sched.address = list_length(&fp->mfu_instructions);
-      inst->mfu_sched.num_instructions = 1;
-      list_addtail(&ctx->mfu->link, &fp->mfu_instructions);
-   }
-
-   list_addtail(&inst->link, &fp->fp_instructions);
-
-   ctx->mfu = NULL;
-   ctx->num_constants = 0;
 }
 
 static void
 fp_emit_tex(struct fp_nir_ctx *ctx, nir_tex_instr *tex)
 {
+   fp_flush(ctx);
+
    struct grate_fp_shader *fp = ctx->fp;
    struct fp_instr *inst = fp_new_instr();
    int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
@@ -865,8 +973,11 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
    struct fp_nir_ctx ctx = { 0 };
    ctx.fp = fp;
    for (unsigned r = 0; r < 16; ++r)
-      for (unsigned c = 0; c < 4; ++c)
+      for (unsigned c = 0; c < 4; ++c) {
          ctx.varying_slot[r][c] = -1;
+         ctx.cur_row[r][c] = -1;
+      }
+   ctx.num_ssa = impl->ssa_alloc;
    ctx.ssa_slot = MALLOC(impl->ssa_alloc * sizeof(int));
    for (unsigned i = 0; i < impl->ssa_alloc; ++i)
       ctx.ssa_slot[i] = -1;
@@ -895,6 +1006,8 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
          }
       }
    }
+
+   fp_flush(&ctx);
 
    FREE(ctx.ssa_slot);
 

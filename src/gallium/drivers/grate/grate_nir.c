@@ -69,6 +69,9 @@ grate_nir_lower_vs(nir_shader *s)
    NIR_PASS(_, s, nir_opt_dce);
 
    nir_index_ssa_defs(nir_shader_get_entrypoint(s));
+
+   if (getenv("GRATE_NIR_DUMP"))
+      nir_print_shader(s, stderr);
 }
 
 void
@@ -89,6 +92,9 @@ grate_nir_lower_fs(nir_shader *s)
    NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             grate_type_size, 0);
 
+   /* the ALU has no lerp, only multiply-add */
+   NIR_PASS(_, s, nir_lower_flrp, 32, false);
+
    /* there are no booleans here, so a compare has to produce 1.0 or 0.0
     * directly rather than a bool that something later converts */
    NIR_PASS(_, s, nir_lower_bool_to_float, true);
@@ -102,4 +108,7 @@ grate_nir_lower_fs(nir_shader *s)
    NIR_PASS(_, s, nir_opt_dce);
 
    nir_index_ssa_defs(nir_shader_get_entrypoint(s));
+
+   if (getenv("GRATE_NIR_DUMP"))
+      nir_print_shader(s, stderr);
 }
