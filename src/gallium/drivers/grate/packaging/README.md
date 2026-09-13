@@ -58,16 +58,22 @@ OpenGL ES 2.0 on the GPU, glxgears at ~34fps on the panel through Xwayland,
 and weston compositing its own clients. See ../tests/README.md for the test
 suites and what they cover.
 
-**Do not enable Xwayland.** glamor's shaders use fragment opcodes the driver
-does not implement (FLR, FRC, RCP) and overflow its 19 scalar temporaries. The
-register allocator falls back to a wrong register rather than failing the
-compile, so a malformed program reaches the GPU, hangs it, and the kernel then
-resets gr3d in a loop:
+**Xwayland and X clients.** glamor's shaders use fragment opcodes the driver
+does not implement (FLR, FRC, RCP, and control flow) and can overflow its 19
+scalar temporaries. A shader the translator cannot express is now replaced with
+a stub that writes nothing, so a malformed program never reaches the GPU - it
+used to hang gr3d, and the kernel then reset it in a loop until the machine
+went down. Expect X clients to render wrong where that happens, not to take the
+device with them. glxgears under phosh's Xwayland runs at ~27fps.
 
-    [drm] tegra_drm_sched_timedout_job: 3d channel: pipes 0x2 (process:glxgears)
-    tegra-gr3d 54180000.gr3d: [drm:tegra_drm_sched_timedout_job] resetting hardware
+**Phosh.** Works, and boots straight into the shell. phoc compiles everything
+it needs and runs GPU accelerated. Note that GTK4 apps render their content on
+the CPU: GTK4 asks for a GLES 3.0 context and falls back to the cairo software
+renderer when it cannot get one. GR3D is GLES 2.0 class hardware, so that is a
+ceiling rather than a bug - the compositing is still on the GPU.
 
-On a Tegra 3 that takes the whole machine down - running glxgears under
-Xwayland reboots the device. Wayland clients are unaffected and stable. libGL,
-GLX and the DRI3 buffer sharing all work; it is only glamor's shaders that are
-beyond the fragment compiler today.
+Two pieces of session plumbing are needed and are not driver matters:
+`/etc/pam.d/systemd-user` must exist (without it the systemd user manager dies
+at step PAM and there is no user bus), and seatd must run as `seatd -g video`.
+`dbus-run-session phosh-session` cannot work: gnome-session needs
+org.freedesktop.systemd1 on the session bus, which a private bus does not have.
