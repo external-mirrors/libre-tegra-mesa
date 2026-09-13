@@ -143,8 +143,12 @@ grate_set_scissor_states(struct pipe_context *pcontext,
                          unsigned num_scissors,
                          const struct pipe_scissor_state * scissors)
 {
+   struct grate_context *context = grate_context(pcontext);
+
    assert(num_scissors == 1);
-   grate_unimplemented();
+   assert(start_slot == 0);
+
+   context->scissor = scissors[0];
 }
 
 static void
@@ -827,6 +831,27 @@ static void
 emit_scissor(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
+
+   /*
+    * Without this the rasterizer covered the whole target whatever was asked
+    * for, so a compositor repainting only what changed drew every surface
+    * across the entire screen. The scissor arrives in the same window space
+    * the viewport puts fragments in, so it needs no flip of its own.
+    */
+   if (context->rast && context->rast->base.scissor) {
+      const struct pipe_scissor_state *s = &context->scissor;
+      uint32_t words[3];
+
+      words[0] = host1x_opcode_incr(REG_TGR3D_SU_SCISSOR_X, 2);
+      words[1] = TGR3D_SU_SCISSOR_X_MIN(s->minx) |
+                 TGR3D_SU_SCISSOR_X_MAX(s->maxx);
+      words[2] = TGR3D_SU_SCISSOR_Y_MIN(s->miny) |
+                 TGR3D_SU_SCISSOR_Y_MAX(s->maxy);
+
+      grate_stream_push_words(stream, ptrp, words, 3, 0);
+      return;
+   }
+
    grate_stream_push_words(stream, ptrp, context->no_scissor, 3, 0);
 }
 
