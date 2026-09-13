@@ -15,7 +15,8 @@ static GLuint sh(GLenum t,const char*s){GLuint x=glCreateShader(t);glShaderSourc
 int main(int argc,char**argv){
   setbuf(stdout,NULL);
   setenv("EGL_PLATFORM","surfaceless",0);
-  const int W=64,H=64;
+  int W = getenv("FB_W")?atoi(getenv("FB_W")):64;
+  int H = getenv("FB_H")?atoi(getenv("FB_H")):64;
   int ncol = argc>1?atoi(argv[1]):64;          /* columns of 2 triangles each */
   EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY);eglInitialize(d,0,0);eglBindAPI(EGL_OPENGL_ES_API);
   EGLint ca[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,

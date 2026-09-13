@@ -332,8 +332,13 @@ grate_create_fs_state(struct pipe_context *pcontext,
       PUSH(0x00000000);
 
    PUSH(host1x_opcode_nonincr(REG_TGR3D_DW_INST_DATA, num_fp_instrs));
-   list_for_each_entry(struct fp_instr, instr, &fp.fp_instructions, link)
-      PUSH(grate_fp_pack_dw(&instr->dw));
+   list_for_each_entry(struct fp_instr, instr, &fp.fp_instructions, link) {
+      /* the shader names colour target n; the surface it lives in is offset by
+       * however many surfaces come before the colour targets */
+      struct fp_dw_instr dw = instr->dw;
+      dw.index += context->framebuffer.rt_base;
+      PUSH(grate_fp_pack_dw(&dw));
+   }
 
    uint32_t tram_setup = 0;
    tram_setup |= TGR3D_GLOBAL_TRI_ATTR_NUM_TRIS(64 / fp.info.max_tram_row);

@@ -22,6 +22,9 @@ struct grate_framebuffer_state {
 
    /* surface slot holding the depth buffer, or -1 when there is none */
    int zs_index;
+
+   /* surface slot of colour target 0 */
+   unsigned rt_base;
 };
 
 struct grate_channel {

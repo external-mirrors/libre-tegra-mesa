@@ -94,8 +94,12 @@ grate_set_framebuffer_state(struct pipe_context *pcontext,
    context->framebuffer.rt_mask = 0;
    context->framebuffer.num_rts = 0;
    context->framebuffer.zs_index = -1;
+   context->framebuffer.rt_base = 0;
 
    util_copy_framebuffer_state(cso, framebuffer);
+
+
+   context->framebuffer.rt_base = context->framebuffer.num_rts;
 
    for (unsigned int i = 0; i < framebuffer->nr_cbufs; i++) {
       grate_add_render_target(context, &framebuffer->cbufs[i], false);
@@ -461,6 +465,7 @@ grate_compare_func(enum pipe_compare_func func)
    case PIPE_FUNC_LEQUAL: return TGR3D_FUNC_LEQUAL;
    case PIPE_FUNC_GREATER: return TGR3D_FUNC_GREATER;
    case PIPE_FUNC_NOTEQUAL: return TGR3D_FUNC_NOTEQUAL;
+   case PIPE_FUNC_GEQUAL: return TGR3D_FUNC_GEQUAL;
    case PIPE_FUNC_ALWAYS: return TGR3D_FUNC_ALWAYS;
    default: UNREACHABLE("unknown pipe_compare_func");
    }
@@ -479,9 +484,33 @@ grate_create_zsa_state(struct pipe_context *pcontext,
    so->base = *template;
 
    uint32_t depth_test = 0;
+   /*
+    * Hardware depth is off unless GRATE_HW_DEPTH is set, because the depth
+    * unit does not use the depth buffer. Measured: clearing the depth buffer
+    * to 1.0 or to 0.0 makes no difference to the test, while the colours
+    * written into surface 0 do - the unit reads and writes surface 0, the
+    * colour buffer, whatever QR_Z_TEST's Z_SURF_PTR says. Sweeping that field,
+    * every other bit of QR_Z_TEST, DW_ST_ENABLE, SURFOVERADDR, the OVERLAP
+    * descriptor bit, GLOBAL_FLUSH and both depth formats changes nothing, and
+    * putting the depth buffer in surface 0 instead stops colour reaching the
+    * framebuffer at all.
+    *
+    * That is why every lit scene came out in alternating columns: the colour
+    * buffer cleared to opaque black is BGRA 00 00 00 ff, which read as pairs
+    * of 16 bit depths is 0x0000, 0xff00, 0x0000, ... so every second pixel
+    * tested against 0.0 and failed. Enabling it also has the rasterizer write
+    * depth over the left half of every colour row.
+    *
+    * Leaving it off costs correct occlusion, which matters to a 3D app but not
+    * to a compositor, and buys a picture that is merely flat rather than
+    * corrupt. The state is still translated so that turning the switch on is
+    * all it takes to carry on investigating.
+    */
+   bool hw_depth = getenv("GRATE_HW_DEPTH") != NULL;
+
    depth_test |= TGR3D_QR_Z_TEST_Z_FUNC(grate_compare_func(template->depth_func));
-   depth_test |= TGR3D_QR_Z_TEST_Z_ENABLE(template->depth_enabled);
-   depth_test |= TGR3D_QR_Z_TEST_QRAST_FB_WRITE(template->depth_writemask);
+   depth_test |= TGR3D_QR_Z_TEST_Z_ENABLE(hw_depth && template->depth_enabled);
+   depth_test |= TGR3D_QR_Z_TEST_QRAST_FB_WRITE(hw_depth && template->depth_writemask);
    depth_test |= TGR3D_QR_Z_TEST_Z_CLAMP(TGR3D_Z_CLAMP_KILL);
 
    so->commands[0] = host1x_opcode_incr(REG_TGR3D_QR_Z_TEST, 1);
@@ -663,6 +692,7 @@ emit_render_targets(struct grate_context *context, uint32_t **ptrp)
    for (i = 0; i < fb->num_rts; ++i) {
       grate_stream_push_reloc(stream, ptrp, fb->rt_bos[i], 0);
    }
+
 
    GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_DW_ST_ENABLE, 1));
    GRATE_PUSHBUF_WORD(*ptrp, fb->rt_mask);

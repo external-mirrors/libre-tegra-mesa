@@ -528,9 +528,11 @@ fill(struct grate_stream *stream, uint32_t **ptrp,
    switch (blocksize) {
    case 1:
       value |= 0 << 16;
+      fill_value = (fill_value & 0xff) * 0x01010101u;
       break;
    case 2:
       value |= 1 << 16;
+      fill_value = (fill_value & 0xffff) * 0x00010001u;
       break;
    case 4:
       value |= 2 << 16;
@@ -538,6 +540,13 @@ fill(struct grate_stream *stream, uint32_t **ptrp,
    default:
       UNREACHABLE("invalid blocksize");
    }
+   /*
+    * srcfgc is a 32 bit pattern whatever the pixel size, so a narrower fill
+    * has to be replicated across the word. Passing a bare 16 bit value left
+    * every second pixel zero: a depth buffer "cleared" to 1.0 came out as
+    * alternating 1.0 and 0.0, so every second column failed the depth test
+    * and kept the background. That is the striping on every lit scene.
+    */
    GRATE_PUSHBUF_WORD(ptr, value);           /* 0x01f - controlmain */
 
    GRATE_PUSHBUF_WORD(ptr, 0x000000cc);      /* 0x020 - ropfade */
@@ -578,6 +587,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
 
    fb = &context->framebuffer.base;
 
+
    err = grate_stream_begin(stream, &ptr);
    if (err < 0) {
       grate_msg("grate_stream_begin() failed: %d\n", err);
@@ -609,6 +619,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
    
    grate_stream_end(stream, &ptr);
    grate_stream_flush(stream, true);
+
 }
 
 static void
