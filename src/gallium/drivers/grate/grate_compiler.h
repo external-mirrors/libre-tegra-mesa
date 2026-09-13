@@ -68,6 +68,11 @@ struct grate_fp_shader {
 void
 grate_tgsi_to_vp(struct grate_vp_shader *vp, struct tgsi_parse_context *tgsi);
 
+struct nir_shader;
+
+void
+grate_nir_to_vp(struct grate_vp_shader *vp, struct nir_shader *s);
+
 void
 grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi);
 

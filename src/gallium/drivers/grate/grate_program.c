@@ -6,6 +6,8 @@
 #include "util/u_memory.h"
 
 #include "nir/nir_to_tgsi.h"
+#include "compiler/nir/nir.h"
+#include "grate_nir.h"
 
 #include "tgsi/tgsi_dump.h"
 #include "tgsi/tgsi_parse.h"
@@ -96,29 +98,59 @@ grate_create_vs_state(struct pipe_context *pcontext,
 
    so->base = *template;
 
-   if (template->type == PIPE_SHADER_IR_NIR) {
-      so->base.tokens = nir_to_tgsi(template->ir.nir,
-                                    pcontext->screen);
-      so->base.type = PIPE_SHADER_IR_TGSI;
-   }
-
-
-   if (grate_debug & GRATE_DEBUG_TGSI) {
-      fprintf(stderr, "DEBUG: TGSI:\n");
-      tgsi_dump(so->base.tokens, 0);
-      fprintf(stderr, "\n");
-   }
-
-   struct tgsi_token *new_tokens = grate_vs_tgsi_transform(so->base.tokens);
-   if (!new_tokens)
-      return NULL;
-
-   struct tgsi_parse_context parser;
-   unsigned ok = tgsi_parse_init(&parser, new_tokens);
-   assert(ok == TGSI_PARSE_OK);
-
    struct grate_vp_shader vp;
-   grate_tgsi_to_vp(&vp, &parser);
+   bool use_nir = template->type == PIPE_SHADER_IR_NIR &&
+                  !getenv("GRATE_VS_TGSI");
+
+   if (use_nir) {
+      /* straight from NIR: no nir_to_tgsi round trip */
+      nir_shader *s = template->ir.nir;
+
+      grate_nir_lower_vs(s);
+      grate_nir_to_vp(&vp, s);
+   } else {
+      if (template->type == PIPE_SHADER_IR_NIR) {
+         so->base.tokens = nir_to_tgsi(template->ir.nir,
+                                       pcontext->screen);
+         so->base.type = PIPE_SHADER_IR_TGSI;
+      }
+
+      if (grate_debug & GRATE_DEBUG_TGSI) {
+         fprintf(stderr, "DEBUG: TGSI:\n");
+         tgsi_dump(so->base.tokens, 0);
+         fprintf(stderr, "\n");
+      }
+
+      struct tgsi_token *new_tokens = grate_vs_tgsi_transform(so->base.tokens);
+      if (!new_tokens)
+         return NULL;
+
+      struct tgsi_parse_context parser;
+      unsigned ok = tgsi_parse_init(&parser, new_tokens);
+      assert(ok == TGSI_PARSE_OK);
+
+      grate_tgsi_to_vp(&vp, &parser);
+   }
+
+   if (getenv("GRATE_VS_TRACE")) {
+      int idx = 0;
+      fprintf(stderr, "GRATE VP PROGRAM (%s):\n", use_nir ? "nir" : "tgsi");
+      list_for_each_entry(struct vp_instr, vi, &vp.instructions, link) {
+         fprintf(stderr, "  [%2d] vec op=%d dst(f=%d i=%d m=0x%x)"
+                 " src0(f=%d i=%d) src1(f=%d i=%d) src2(f=%d i=%d)"
+                 " | scl op=%d dst(f=%d i=%d m=0x%x) src(f=%d i=%d)\n", idx++,
+                 vi->vec.op, vi->vec.dst.file, vi->vec.dst.index,
+                 vi->vec.dst.write_mask,
+                 vi->vec.src[0].file, vi->vec.src[0].index,
+                 vi->vec.src[1].file, vi->vec.src[1].index,
+                 vi->vec.src[2].file, vi->vec.src[2].index,
+                 vi->scalar.op, vi->scalar.dst.file, vi->scalar.dst.index,
+                 vi->scalar.dst.write_mask,
+                 vi->scalar.src.file, vi->scalar.src.index);
+      }
+      fprintf(stderr, "  output_mask=0x%x immediates=%u\n",
+              vp.output_mask, vp.num_immediates);
+   }
 
    int num_instructions = list_length(&vp.instructions);
    assert(num_instructions < 256);
