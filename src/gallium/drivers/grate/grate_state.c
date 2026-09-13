@@ -290,7 +290,15 @@ grate_create_blend_state(struct pipe_context *pcontext,
 static void
 grate_bind_blend_state(struct pipe_context *pcontext, void *so)
 {
-   grate_unimplemented();
+   /*
+    * Kept, but it changes nothing yet: there is no blending in the register
+    * set at all - the data write stage offers a logic op and nothing else -
+    * and the one destination read path the hardware does have (see
+    * GLOBAL_MEMORY_OUTPUT_READS in grate_draw.c) delivers the destination
+    * after the fragment program has run, so a shader cannot combine with it.
+    * Everything therefore draws opaque.
+    */
+   grate_context(pcontext)->blend = so;
 }
 
 static void

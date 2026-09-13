@@ -135,6 +135,14 @@ grate_init_state(struct grate_context *context, uint32_t **ptrp)
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_GSHIM_DLB_RANGE, 0));
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_GSHIM_DLB_TRIGGER, 0));
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_GSHIM_DEBUG0, 0));
+   /*
+    * READ_DEST makes the data write stage fetch the destination pixel. It
+    * works - turning it on has the destination colour come back out - but the
+    * value lands in R2-R3 after the ALU has run, replacing whatever the
+    * fragment program put there, and DW_LOGIC_OP makes no difference to the
+    * result. So the destination is readable by the hardware and not by the
+    * shader, which is what blending would need. Left off.
+    */
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_GLOBAL_MEMORY_OUTPUT_READS, 0));
    GRATE_PUSHBUF_WORD(ptr, host1x_opcode_imm(REG_TGR3D_GLOBAL_HORIZONTAL_SWATH_RENDERING, 0));
 
