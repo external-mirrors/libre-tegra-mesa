@@ -35,6 +35,14 @@ struct fp_nir_ctx {
    struct fp_mfu_instr *mfu;
    uint32_t constants[3];
    int num_constants;
+
+   /* varying (tram row, component) -> the temporary holding it */
+   int varying_slot[16][4];
+
+   /* copies of varyings interpolated by the instruction being built */
+   unsigned keep_comp[4];
+   unsigned keep_slot[4];
+   unsigned num_keep;
 };
 
 static unsigned
@@ -138,14 +146,37 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
       switch (intr->intrinsic) {
       case nir_intrinsic_load_input:
       case nir_intrinsic_load_interpolated_input: {
-         /* a varying is interpolated into the row register of its own
-          * component, so the slot is keyed on the source swizzle */
+         /*
+          * Varyings are interpolated once, up front, into temporaries. Asking
+          * the MFU for the same varying twice does not give the same answer
+          * the second time, so a shader that reads one component in two
+          * instructions used to get two different values for it.
+          */
          unsigned row = nir_intrinsic_base(intr);
+
+         if (row < 16 && comp < 4 && ctx->varying_slot[row][comp] >= 0) {
+            /* already interpolated once; read the copy that was kept */
+            op.index = fp_reg_for_slot(ctx, ctx->varying_slot[row][comp]);
+            op.datatype = FP_DATATYPE_FP20;
+            return op;
+         }
 
          assert(ctx->mfu != NULL);
          ctx->mfu->var[comp].op = FP_VAR_OP_FP20;
          ctx->mfu->var[comp].tram_row = row;
          ctx->fp->info.max_tram_row = MAX2(ctx->fp->info.max_tram_row, row);
+
+         /*
+          * Keep a copy: asking the MFU for the same varying again in a later
+          * instruction does not give the same answer, so a component read in
+          * two instructions would otherwise come back as two different values.
+          */
+         if (row < 16 && comp < 4 && ctx->num_keep < 4) {
+            ctx->keep_comp[ctx->num_keep] = comp;
+            ctx->varying_slot[row][comp] = ctx->num_slots++;
+            ctx->keep_slot[ctx->num_keep] = ctx->varying_slot[row][comp];
+            ctx->num_keep++;
+         }
 
          op.index = comp;
          return op;
@@ -239,6 +270,31 @@ fp_finish(struct fp_nir_ctx *ctx, struct fp_instr *inst,
           struct fp_alu_instr_packet *pkt)
 {
    struct grate_fp_shader *fp = ctx->fp;
+   unsigned limit = ctx->num_constants > 0 ? 3 : 4;
+   unsigned next = 0;
+
+   while (next < limit && pkt->slots[next].dst.index != 0)
+      next++;
+   if (pkt->slots[0].dst.index == 0 && next == 0)
+      next = 1;
+
+   for (unsigned i = 0; i < ctx->num_keep && next < limit; ++i, ++next) {
+      struct fp_alu_src_operand row = { 0 };
+      struct fp_alu_dst_operand d = { 0 };
+
+      row.index = ctx->keep_comp[i];
+      d.index = fp_reg_for_slot(ctx, ctx->keep_slot[i]);
+      d.write_low_sub_reg = true;
+      d.write_high_sub_reg = true;
+
+      pkt->slots[next] = (struct fp_alu_instr){
+         .op = FP_ALU_OP_MAD,
+         .condition = FP_CONDITION_ALWAYS,
+         .dst = d,
+         .src = { row, fp_src_one(), fp_src_zero(), fp_src_zero() },
+      };
+   }
+   ctx->num_keep = 0;
 
    if (ctx->num_constants > 0) {
       pkt->has_constants = true;
@@ -765,6 +821,7 @@ grate_fp_finish(struct grate_fp_shader *fp)
    }
 }
 
+
 void
 grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
 {
@@ -807,6 +864,9 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
 
    struct fp_nir_ctx ctx = { 0 };
    ctx.fp = fp;
+   for (unsigned r = 0; r < 16; ++r)
+      for (unsigned c = 0; c < 4; ++c)
+         ctx.varying_slot[r][c] = -1;
    ctx.ssa_slot = MALLOC(impl->ssa_alloc * sizeof(int));
    for (unsigned i = 0; i < impl->ssa_alloc; ++i)
       ctx.ssa_slot[i] = -1;
