@@ -99,8 +99,10 @@ grate_create_vs_state(struct pipe_context *pcontext,
    so->base = *template;
 
    struct grate_vp_shader vp;
+   /* NIR translation is opt-in on both stages until the fragment side passes
+    * the suite; TGSI is what everything on the device is running */
    bool use_nir = template->type == PIPE_SHADER_IR_NIR &&
-                  !getenv("GRATE_VS_TGSI");
+                  getenv("GRATE_VS_NIR");
 
    if (use_nir) {
       /* straight from NIR: no nir_to_tgsi round trip */
@@ -226,7 +228,12 @@ grate_create_fs_state(struct pipe_context *pcontext,
 
    so->base = *template;
 
-   if (template->type == PIPE_SHADER_IR_NIR) {
+   /* the fragment translator is still being brought up, so it is opt-in:
+    * everything keeps using the TGSI path until it passes the suite */
+   bool fs_nir = template->type == PIPE_SHADER_IR_NIR &&
+                 getenv("GRATE_FS_NIR");
+
+   if (template->type == PIPE_SHADER_IR_NIR && !fs_nir) {
       so->base.tokens = nir_to_tgsi(template->ir.nir,
                                     pcontext->screen);
       so->base.type = PIPE_SHADER_IR_TGSI;
@@ -239,12 +246,49 @@ grate_create_fs_state(struct pipe_context *pcontext,
       fprintf(stderr, "\n");
    }
 
-   struct tgsi_parse_context parser;
-   unsigned ok = tgsi_parse_init(&parser, so->base.tokens);
-   assert(ok == TGSI_PARSE_OK);
-
    struct grate_fp_shader fp;
-   grate_tgsi_to_fp(&fp, &parser);
+
+   if (fs_nir) {
+      /* straight from NIR: no nir_to_tgsi round trip */
+      nir_shader *s = template->ir.nir;
+
+      grate_nir_lower_fs(s);
+      grate_nir_to_fp(&fp, s);
+   } else {
+      struct tgsi_parse_context parser;
+      unsigned ok = tgsi_parse_init(&parser, so->base.tokens);
+      assert(ok == TGSI_PARSE_OK);
+
+      grate_tgsi_to_fp(&fp, &parser);
+   }
+
+   if (getenv("GRATE_FS_TRACE")) {
+      int idx = 0;
+      fprintf(stderr, "GRATE FP PROGRAM (%s):\n", fs_nir ? "nir" : "tgsi");
+      list_for_each_entry(struct fp_instr, fi, &fp.fp_instructions, link)
+         fprintf(stderr, "  fp[%d] mfu{a=%d n=%d} alu{a=%d n=%d} tex=%d dw=%d\n",
+                 idx++, fi->mfu_sched.address, fi->mfu_sched.num_instructions,
+                 fi->alu_sched.address, fi->alu_sched.num_instructions,
+                 fi->tex.enable, fi->dw.enable);
+      idx = 0;
+      list_for_each_entry(struct fp_mfu_instr, m, &fp.mfu_instructions, link)
+         fprintf(stderr, "  mfu[%d] var{op %d/%d %d/%d %d/%d %d/%d}\n", idx++,
+                 m->var[0].op, m->var[0].tram_row, m->var[1].op, m->var[1].tram_row,
+                 m->var[2].op, m->var[2].tram_row, m->var[3].op, m->var[3].tram_row);
+      idx = 0;
+      list_for_each_entry(struct fp_alu_instr_packet, k, &fp.alu_instructions, link) {
+         fprintf(stderr, "  alu[%d]", idx++);
+         for (int q = 0; q < 4; ++q)
+            fprintf(stderr, " {op%d c%d d%d(%d%d) s%d,%d,%d}",
+                    k->slots[q].op, k->slots[q].condition, k->slots[q].dst.index,
+                    k->slots[q].dst.write_low_sub_reg, k->slots[q].dst.write_high_sub_reg,
+                    k->slots[q].src[0].index, k->slots[q].src[1].index,
+                    k->slots[q].src[2].index);
+         fprintf(stderr, " const=%d\n", k->has_constants);
+      }
+      fprintf(stderr, "  max_tram_row=%d num_inputs=%d\n",
+              fp.info.max_tram_row, fp.info.num_inputs);
+   }
 
    struct util_dynarray buf;
    util_dynarray_init(&buf, NULL);

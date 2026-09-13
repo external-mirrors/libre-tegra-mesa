@@ -194,4 +194,12 @@ grate_fp_pack_sched(struct fp_sched *sched);
 uint32_t
 grate_fp_pack_alu_sched_t114(struct fp_sched *sched);
 
+/* fragment linker words, shared by both translators */
+#define LINK_SRC(index) ((index) << 3)
+#define LINK_DST(index, comp, type) (((comp) | (type) << 2) << ((index) * 4))
+#define LINK_DST_NONE      0
+#define LINK_DST_FX10_LOW  1
+#define LINK_DST_FX10_HIGH 2
+#define LINK_DST_FP20      3
+
 #endif

@@ -26,6 +26,7 @@ files_libgrate = files(
   'drm/syncpt.c',
   'drm/tegra.h',
   'fp/fpir.h',
+  'fp/nir.c',
   'fp/pack.c',
   'fp/tgsi.c',
   'fp/vliw.h',

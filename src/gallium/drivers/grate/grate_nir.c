@@ -61,6 +61,41 @@ grate_nir_lower_vs(nir_shader *s)
     * file and no notion of a buffer to load from */
    grate_nir_optimize(s);
 
+   NIR_PASS(_, s, nir_lower_bool_to_float, true);
+
+   grate_nir_optimize(s);
+
+   NIR_PASS(_, s, nir_convert_from_ssa, true, false);
+   NIR_PASS(_, s, nir_opt_dce);
+
+   nir_index_ssa_defs(nir_shader_get_entrypoint(s));
+}
+
+void
+grate_nir_lower_fs(nir_shader *s)
+{
+   NIR_PASS(_, s, nir_lower_vars_to_ssa);
+   NIR_PASS(_, s, nir_lower_returns);
+   NIR_PASS(_, s, nir_inline_functions);
+   NIR_PASS(_, s, nir_opt_copy_prop);
+   NIR_PASS(_, s, nir_opt_deref);
+
+   NIR_PASS(_, s, nir_lower_io_vars_to_temporaries,
+            nir_shader_get_entrypoint(s),
+            nir_var_shader_in | nir_var_shader_out);
+   NIR_PASS(_, s, nir_lower_global_vars_to_local);
+   NIR_PASS(_, s, nir_lower_vars_to_ssa);
+
+   NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+            grate_type_size, 0);
+
+   /* there are no booleans here, so a compare has to produce 1.0 or 0.0
+    * directly rather than a bool that something later converts */
+   NIR_PASS(_, s, nir_lower_bool_to_float, true);
+
+   /* the fragment ALU is scalar, so give it scalar work */
+   NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
+
    grate_nir_optimize(s);
 
    NIR_PASS(_, s, nir_convert_from_ssa, true, false);
