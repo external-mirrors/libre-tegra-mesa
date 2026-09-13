@@ -5,14 +5,9 @@
 #include "util/u_bitcast.h"
 #include "util/u_memory.h"
 
-#include "nir/nir_to_tgsi.h"
 #include "compiler/nir/nir.h"
 #include "grate_nir.h"
 
-#include "tgsi/tgsi_dump.h"
-#include "tgsi/tgsi_parse.h"
-#include "tgsi/tgsi_scan.h"
-#include "tgsi/tgsi_transform.h"
 
 #include "grate_device.h"
 #include "host1x01_hardware.h"
@@ -24,65 +19,6 @@
 #include "fp/fpir.h"
 #include "vp/vpir.h"
 
-struct grate_vs_tgsi_transform_context {
-   struct tgsi_transform_context base;
-   unsigned next_temp;
-};
-
-static void
-grate_vs_tgsi_transform_instruction(struct tgsi_transform_context *ctx,
-                                    struct tgsi_full_instruction *inst)
-{
-   struct grate_vs_tgsi_transform_context *gctx =
-      (struct grate_vs_tgsi_transform_context *)ctx;
-
-   int const_index = -1;
-   for (unsigned i = 0; i < inst->Instruction.NumSrcRegs; i++) {
-      if (inst->Src[i].Register.File != TGSI_FILE_CONSTANT)
-         continue;
-
-      if (const_index < 0)
-         const_index = inst->Src[i].Register.Index;
-      else if (inst->Src[i].Register.Index != const_index) {
-         /* We already have a constant-reads in this instruction,
-          * add extra instructions in order to read more
-          */
-         unsigned temp = gctx->next_temp++;
-         tgsi_transform_temp_decl(ctx, temp);
-         /* insert MOV to temp */
-         tgsi_transform_op1_inst(ctx, TGSI_OPCODE_MOV,
-                                 /* dst reg */
-                                 TGSI_FILE_TEMPORARY, temp,
-                                 TGSI_WRITEMASK_XYZW,
-                                 /* src reg */
-                                 TGSI_FILE_CONSTANT,
-                                 inst->Src[i].Register.Index);
-
-         /* rewrite instruction */
-         tgsi_transform_src_reg_xyzw(&inst->Src[i], TGSI_FILE_TEMPORARY, temp);
-         inst->Src[i].Register.File = TGSI_FILE_TEMPORARY;
-         inst->Src[i].Register.Index = temp;
-      }
-   }
-
-   ctx->emit_instruction(ctx, inst);
-}
-
-static struct tgsi_token *
-grate_vs_tgsi_transform(const struct tgsi_token *tokens_in)
-{
-   grate_trace();
-   const unsigned new_len = tgsi_num_tokens(tokens_in) + 100;
-
-   struct tgsi_shader_info info;
-   tgsi_scan_shader(tokens_in, &info);
-
-   struct grate_vs_tgsi_transform_context ctx = {};
-   ctx.base.transform_instruction = grate_vs_tgsi_transform_instruction;
-   ctx.next_temp = info.file_max[TGSI_FILE_TEMPORARY] + 1;
-
-   return tgsi_transform_shader(tokens_in, new_len, &ctx.base);
-}
 
 
 static void *
@@ -99,44 +35,13 @@ grate_create_vs_state(struct pipe_context *pcontext,
    so->base = *template;
 
    struct grate_vp_shader vp;
-   /* NIR translation is opt-in on both stages until the fragment side passes
-    * the suite; TGSI is what everything on the device is running */
-   bool use_nir = template->type == PIPE_SHADER_IR_NIR &&
-                  getenv("GRATE_VS_NIR");
 
-   if (use_nir) {
-      /* straight from NIR: no nir_to_tgsi round trip */
-      nir_shader *s = template->ir.nir;
-
-      grate_nir_lower_vs(s);
-      grate_nir_to_vp(&vp, s);
-   } else {
-      if (template->type == PIPE_SHADER_IR_NIR) {
-         so->base.tokens = nir_to_tgsi(template->ir.nir,
-                                       pcontext->screen);
-         so->base.type = PIPE_SHADER_IR_TGSI;
-      }
-
-      if (grate_debug & GRATE_DEBUG_TGSI) {
-         fprintf(stderr, "DEBUG: TGSI:\n");
-         tgsi_dump(so->base.tokens, 0);
-         fprintf(stderr, "\n");
-      }
-
-      struct tgsi_token *new_tokens = grate_vs_tgsi_transform(so->base.tokens);
-      if (!new_tokens)
-         return NULL;
-
-      struct tgsi_parse_context parser;
-      unsigned ok = tgsi_parse_init(&parser, new_tokens);
-      assert(ok == TGSI_PARSE_OK);
-
-      grate_tgsi_to_vp(&vp, &parser);
-   }
+   grate_nir_lower_vs(template->ir.nir);
+   grate_nir_to_vp(&vp, template->ir.nir);
 
    if (getenv("GRATE_VS_TRACE")) {
       int idx = 0;
-      fprintf(stderr, "GRATE VP PROGRAM (%s):\n", use_nir ? "nir" : "tgsi");
+      fprintf(stderr, "GRATE VP PROGRAM:\n");
       list_for_each_entry(struct vp_instr, vi, &vp.instructions, link) {
          fprintf(stderr, "  [%2d] vec op=%d dst(f=%d i=%d m=0x%x)"
                  " src0(f=%d i=%d) src1(f=%d i=%d) src2(f=%d i=%d)"
@@ -228,43 +133,14 @@ grate_create_fs_state(struct pipe_context *pcontext,
 
    so->base = *template;
 
-   /* the fragment translator is still being brought up, so it is opt-in:
-    * everything keeps using the TGSI path until it passes the suite */
-   bool fs_nir = template->type == PIPE_SHADER_IR_NIR &&
-                 getenv("GRATE_FS_NIR");
-
-   if (template->type == PIPE_SHADER_IR_NIR && !fs_nir) {
-      so->base.tokens = nir_to_tgsi(template->ir.nir,
-                                    pcontext->screen);
-      so->base.type = PIPE_SHADER_IR_TGSI;
-   }
-
-
-   if (grate_debug & GRATE_DEBUG_TGSI) {
-      fprintf(stderr, "DEBUG: TGSI:\n");
-      tgsi_dump(so->base.tokens, 0);
-      fprintf(stderr, "\n");
-   }
-
    struct grate_fp_shader fp;
 
-   if (fs_nir) {
-      /* straight from NIR: no nir_to_tgsi round trip */
-      nir_shader *s = template->ir.nir;
-
-      grate_nir_lower_fs(s);
-      grate_nir_to_fp(&fp, s);
-   } else {
-      struct tgsi_parse_context parser;
-      unsigned ok = tgsi_parse_init(&parser, so->base.tokens);
-      assert(ok == TGSI_PARSE_OK);
-
-      grate_tgsi_to_fp(&fp, &parser);
-   }
+   grate_nir_lower_fs(template->ir.nir);
+   grate_nir_to_fp(&fp, template->ir.nir);
 
    if (getenv("GRATE_FS_TRACE")) {
       int idx = 0;
-      fprintf(stderr, "GRATE FP PROGRAM (%s):\n", fs_nir ? "nir" : "tgsi");
+      fprintf(stderr, "GRATE FP PROGRAM:\n");
       list_for_each_entry(struct fp_instr, fi, &fp.fp_instructions, link)
          fprintf(stderr, "  fp[%d] mfu{a=%d n=%d} alu{a=%d n=%d} tex=%d dw=%d\n",
                  idx++, fi->mfu_sched.address, fi->mfu_sched.num_instructions,

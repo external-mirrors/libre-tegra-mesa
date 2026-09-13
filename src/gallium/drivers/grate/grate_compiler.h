@@ -5,7 +5,6 @@
 
 #include <stdint.h>
 
-struct tgsi_parse_context;
 
 /*
  * The vertex constant file holds 256 vec4s (REG_TGR3D_VPE_CONST_READ_LIMIT is
@@ -65,16 +64,12 @@ struct grate_fp_shader {
    unsigned num_temps;
 };
 
-void
-grate_tgsi_to_vp(struct grate_vp_shader *vp, struct tgsi_parse_context *tgsi);
 
 struct nir_shader;
 
 void
 grate_nir_to_vp(struct grate_vp_shader *vp, struct nir_shader *s);
 
-void
-grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi);
 
 void
 grate_nir_to_fp(struct grate_fp_shader *fp, struct nir_shader *s);

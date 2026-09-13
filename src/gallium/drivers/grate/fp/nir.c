@@ -52,6 +52,15 @@ struct fp_nir_ctx {
    int cur_row[16][4];
 
    /* operations gathered for the instruction being built */
+   /* slot reuse: a slot goes back on the free list once the value it holds
+    * has been read for the last time, but not before the instruction being
+    * built is emitted, or a pending operation would read a reused register */
+   unsigned *last_use;
+   unsigned free_slot[FP_NUM_GLOBALS + FP_SPILL_COUNT];
+   unsigned num_free;
+   unsigned dying[FP_MAX_SLOTS];
+   unsigned num_dying;
+
    struct fp_alu_instr batch[FP_MAX_SLOTS];
    const nir_def *batch_def[FP_MAX_SLOTS];
    unsigned num_batch;
@@ -76,10 +85,18 @@ fp_reg_for_slot(struct fp_nir_ctx *ctx, unsigned slot)
 }
 
 static unsigned
+fp_alloc_slot(struct fp_nir_ctx *ctx)
+{
+   if (ctx->num_free > 0)
+      return ctx->free_slot[--ctx->num_free];
+   return ctx->num_slots++;
+}
+
+static unsigned
 fp_slot_for_def(struct fp_nir_ctx *ctx, const nir_def *def)
 {
    if (ctx->ssa_slot[def->index] < 0)
-      ctx->ssa_slot[def->index] = ctx->num_slots++;
+      ctx->ssa_slot[def->index] = fp_alloc_slot(ctx);
    return ctx->ssa_slot[def->index];
 }
 
@@ -200,7 +217,7 @@ fp_nir_src(struct fp_nir_ctx *ctx, nir_src src, unsigned comp)
          if (row < 16 && comp < 4 && ctx->num_keep < 4) {
             ctx->keep_comp[ctx->num_keep] = comp;
             ctx->keep_row[ctx->num_keep] = row;
-            ctx->keep_slot[ctx->num_keep] = ctx->num_slots++;
+            ctx->keep_slot[ctx->num_keep] = fp_alloc_slot(ctx);
             ctx->num_keep++;
             ctx->cur_row[row][comp] = comp;
          }
@@ -387,6 +404,11 @@ fp_emit_packets(struct fp_nir_ctx *ctx, struct fp_alu_instr *slots, unsigned n)
    ctx->mfu = NULL;
    ctx->num_constants = 0;
    memset(ctx->writes, 0, sizeof(ctx->writes));
+
+   for (unsigned i = 0; i < ctx->num_dying; ++i)
+      if (ctx->num_free < ARRAY_SIZE(ctx->free_slot))
+         ctx->free_slot[ctx->num_free++] = ctx->dying[i];
+   ctx->num_dying = 0;
 }
 
 static void
@@ -545,7 +567,7 @@ fp_emit_form(struct fp_nir_ctx *ctx, nir_alu_instr *alu, enum fp_alu_op op,
 static void
 fp_emit_sne(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
 {
-   unsigned scratch = ctx->num_slots++;
+   unsigned scratch = fp_alloc_slot(ctx);
 
    {
          fp_prepare(ctx, &alu->src[0].src, 1);
@@ -582,6 +604,81 @@ fp_emit_sne(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
          .src = { s, fp_src_one(), fp_src_one(), fp_src_one() },
       });
    }
+
+   if (ctx->num_dying < ARRAY_SIZE(ctx->dying))
+      ctx->dying[ctx->num_dying++] = scratch;
+}
+
+/*
+ * dst = cond(a) ? b : c, which the ALU has no single instruction for. Written
+ * as c + mask * (b - c), with mask 1.0 or 0.0. fcsel's own condition is on a
+ * value that is already 1.0 or 0.0, so it needs no compare; fcsel_gt and
+ * fcsel_ge carry the compare and get one.
+ */
+static void
+fp_emit_csel(struct fp_nir_ctx *ctx, nir_alu_instr *alu, enum fp_condition cond)
+{
+   for (unsigned i = 0; i < 3; ++i)
+      fp_prepare(ctx, &alu->src[i].src, 1);
+
+   struct fp_alu_src_operand a = fp_nir_alu_src(ctx, alu, 0);
+   struct fp_alu_src_operand b = fp_nir_alu_src(ctx, alu, 1);
+   struct fp_alu_src_operand c = fp_nir_alu_src(ctx, alu, 2);
+
+   int mask = -1;
+
+   if (cond != FP_CONDITION_ALWAYS) {
+      unsigned slot = fp_alloc_slot(ctx);
+      struct fp_alu_dst_operand d = { 0 };
+
+      d.index = fp_reg_for_slot(ctx, slot);
+      d.write_low_sub_reg = true;
+      d.write_high_sub_reg = true;
+
+      fp_gather(ctx, (struct fp_alu_instr){
+         .op = FP_ALU_OP_MAD,
+         .condition = cond,
+         .dst = d,
+         .src = { a, fp_src_one(), fp_src_zero(), fp_src_zero() },
+      });
+
+      a = (struct fp_alu_src_operand){ .index = d.index,
+                                       .datatype = FP_DATATYPE_FP20 };
+      mask = (int)slot;
+   }
+
+   unsigned diff = fp_alloc_slot(ctx);
+   struct fp_alu_dst_operand d = { 0 };
+
+   d.index = fp_reg_for_slot(ctx, diff);
+   d.write_low_sub_reg = true;
+   d.write_high_sub_reg = true;
+
+   struct fp_alu_src_operand negc = c;
+   negc.negate = !negc.negate;
+
+   fp_gather(ctx, (struct fp_alu_instr){
+      .op = FP_ALU_OP_MAD,
+      .condition = FP_CONDITION_ALWAYS,
+      .dst = d,
+      .src = { b, fp_src_one(), negc, negc },
+   });
+
+   struct fp_alu_src_operand t = { .index = d.index,
+                                   .datatype = FP_DATATYPE_FP20 };
+
+   ctx->cur_def = &alu->def;
+   fp_gather(ctx, (struct fp_alu_instr){
+      .op = FP_ALU_OP_MAD,
+      .condition = FP_CONDITION_ALWAYS,
+      .dst = fp_dst_for_def(ctx, &alu->def, false),
+      .src = { a, t, c, c },
+   });
+
+   if (mask >= 0 && ctx->num_dying < ARRAY_SIZE(ctx->dying))
+      ctx->dying[ctx->num_dying++] = mask;
+   if (ctx->num_dying < ARRAY_SIZE(ctx->dying))
+      ctx->dying[ctx->num_dying++] = diff;
 }
 
 static void
@@ -608,6 +705,9 @@ fp_emit_alu(struct fp_nir_ctx *ctx, nir_alu_instr *alu)
    case nir_op_seq:  fp_emit_form(ctx, alu, FP_ALU_OP_MAD, FP_FORM_SUB_REV,
                                   FP_CONDITION_EQUAL); break;
    case nir_op_sne:  fp_emit_sne(ctx, alu); break;
+   case nir_op_fcsel:    fp_emit_csel(ctx, alu, FP_CONDITION_ALWAYS); break;
+   case nir_op_fcsel_gt: fp_emit_csel(ctx, alu, FP_CONDITION_GREATER); break;
+   case nir_op_fcsel_ge: fp_emit_csel(ctx, alu, FP_CONDITION_GEQUAL); break;
    case nir_op_fsat: fp_emit_form(ctx, alu, FP_ALU_OP_MAD, FP_FORM_MOV,
                                   FP_CONDITION_ALWAYS); break;
    /* negation and absolute value are operand modifiers, not instructions */
@@ -930,6 +1030,46 @@ grate_fp_finish(struct grate_fp_shader *fp)
 }
 
 
+struct fp_use_ctx {
+   struct fp_nir_ctx *ctx;
+   unsigned idx;
+};
+
+static bool
+fp_note_use(nir_src *src, void *data)
+{
+   struct fp_use_ctx *u = data;
+
+   u->ctx->last_use[src->ssa->index] = u->idx;
+   return true;
+}
+
+static bool
+fp_extend_use(nir_src *src, void *data)
+{
+   struct fp_use_ctx *u = data;
+   unsigned *slot = &u->ctx->last_use[src->ssa->index];
+
+   *slot = MAX2(*slot, u->idx);
+   return true;
+}
+
+static bool
+fp_release_use(nir_src *src, void *data)
+{
+   struct fp_use_ctx *u = data;
+   struct fp_nir_ctx *ctx = u->ctx;
+   unsigned i = src->ssa->index;
+
+   if (ctx->last_use[i] != u->idx || ctx->ssa_slot[i] < 0)
+      return true;
+
+   if (ctx->num_dying < ARRAY_SIZE(ctx->dying))
+      ctx->dying[ctx->num_dying++] = ctx->ssa_slot[i];
+   ctx->ssa_slot[i] = -1;
+   return true;
+}
+
 void
 grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
 {
@@ -982,6 +1122,46 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
    for (unsigned i = 0; i < impl->ssa_alloc; ++i)
       ctx.ssa_slot[i] = -1;
 
+   /*
+    * Nineteen scalar registers is not many, so a slot has to go back on the
+    * free list once the value in it has been read for the last time. Work out
+    * where that is before translating anything.
+    */
+   ctx.last_use = CALLOC(impl->ssa_alloc, sizeof(unsigned));
+   {
+      unsigned idx = 0;
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            nir_foreach_src(instr, fp_note_use, &(struct fp_use_ctx){
+               .ctx = &ctx, .idx = idx });
+            idx++;
+         }
+      }
+
+      /*
+       * vecN only gathers and the modifiers are folded into whatever reads
+       * them, so none of these emit anything: their sources have to stay live
+       * until the operation that consumes the result, not until the
+       * instruction that nominally reads them.
+       */
+      nir_foreach_block_reverse(block, impl) {
+         nir_foreach_instr_reverse(instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+
+            nir_alu_instr *a = nir_instr_as_alu(instr);
+            if (a->op != nir_op_vec2 && a->op != nir_op_vec3 &&
+                a->op != nir_op_vec4 && a->op != nir_op_fneg &&
+                a->op != nir_op_fabs)
+               continue;
+
+            nir_foreach_src(instr, fp_extend_use, &(struct fp_use_ctx){
+               .ctx = &ctx, .idx = ctx.last_use[a->def.index] });
+         }
+      }
+   }
+
+   unsigned idx = 0;
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
          switch (instr->type) {
@@ -1004,12 +1184,17 @@ grate_nir_to_fp(struct grate_fp_shader *fp, nir_shader *s)
             fp->unsupported = true;
             break;
          }
+
+         nir_foreach_src(instr, fp_release_use, &(struct fp_use_ctx){
+            .ctx = &ctx, .idx = idx });
+         idx++;
       }
    }
 
    fp_flush(&ctx);
 
    FREE(ctx.ssa_slot);
+   FREE(ctx.last_use);
 
    /* store what the ALU built up in R2-R3, once, at the end */
    if (!list_is_empty(&fp->fp_instructions)) {
