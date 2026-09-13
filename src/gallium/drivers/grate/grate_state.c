@@ -63,12 +63,24 @@ static void grate_add_render_target(struct grate_context *context,
    if (grate_debug & GRATE_DEBUG_TRACE)
       fprintf(stderr, "GRATE RT: pipe_format=%s hw_format=%d\n",
               util_format_short_name(ref->format), res->format);
+   unsigned rlvl = MIN2(ref->level, (unsigned)(GRATE_MAX_MIP_LEVELS - 1));
+   unsigned rpitch = res->level_pitch[rlvl] ? res->level_pitch[rlvl] : res->pitch;
+
    rt_params  = TGR3D_GLOBAL_SURFDESC_SURF_FORMAT(res->format);
-   rt_params |= TGR3D_GLOBAL_SURFDESC_ARRAY_STRIDE(res->pitch);
+   rt_params |= TGR3D_GLOBAL_SURFDESC_ARRAY_STRIDE(rpitch);
    rt_params |= TGR3D_GLOBAL_SURFDESC_STRUCTURE(res->tiled);
    
+   /*
+    * Rendering into a mip level has to land at that level's offset. Without
+    * this every level Mesa generates was written over level 0, so a mip chain
+    * had storage but no contents and minification stayed aliased.
+    */
+   unsigned lvl = MIN2(ref->level, (unsigned)(GRATE_MAX_MIP_LEVELS - 1));
+
    context->framebuffer.rt_params[context->framebuffer.num_rts] = rt_params;
    context->framebuffer.rt_bos[context->framebuffer.num_rts] = res->bo;
+   context->framebuffer.rt_offset[context->framebuffer.num_rts] =
+      res->level_offset[lvl];
 
    /*
     * The depth buffer needs a surface slot of its own for its address and
@@ -335,6 +347,7 @@ grate_bind_sampler_states(struct pipe_context *pcontext,
                           void **samplers)
 {
    struct grate_context *context = grate_context(pcontext);
+
 
    if (shader != MESA_SHADER_FRAGMENT)
       return;
@@ -698,7 +711,7 @@ emit_render_targets(struct grate_context *context, uint32_t **ptrp)
 
    GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_GLOBAL_SURFADDR(0), fb->num_rts));
    for (i = 0; i < fb->num_rts; ++i) {
-      grate_stream_push_reloc(stream, ptrp, fb->rt_bos[i], 0);
+      grate_stream_push_reloc(stream, ptrp, fb->rt_bos[i], fb->rt_offset[i]);
    }
 
 
@@ -742,13 +755,12 @@ emit_textures(struct grate_context *context, uint32_t **ptrp)
       bool mip_linear = smp && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR;
       bool mipmapped  = smp && smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE;
 
+
       uint32_t lo = TGR3D_TEX_TEXDESC_LO_SURF_FORMAT(res->format);
       if (mag_linear)
          lo |= TGR3D_TEX_TEXDESC_LO_LERP_MAG;
       if (min_linear)
          lo |= TGR3D_TEX_TEXDESC_LO_LERP_MIN;
-      if (mip_linear)
-         lo |= TGR3D_TEX_TEXDESC_LO_LERP_MIP;
       if (smp) {
          if (smp->wrap_s == PIPE_TEX_WRAP_CLAMP_TO_EDGE)
             lo |= TGR3D_TEX_TEXDESC_LO_CLAMP_S(TGR3D_CLAMP_CLAMP);
@@ -761,8 +773,32 @@ emit_textures(struct grate_context *context, uint32_t **ptrp)
       }
 
       uint32_t hi = 0;
-      if (!mipmapped)
-         hi |= TGR3D_TEX_TEXDESC_HI_NORMALIZE__MASK;  /* MIPMAP_DISABLE */
+      /*
+       * Mip levels have storage but the descriptor has no per-level address,
+       * so where the sampler looks for level 1 is not known. Until it is,
+       * always sample level 0: minification aliases, which is a blemish, and
+       * letting the sampler loose on levels it cannot find hangs the GPU.
+       */
+      /*
+       * NORMALIZE is normalized texture coordinates, which is what GL always
+       * wants; it was being used as a mipmap disable, so a mipmapped texture
+       * lost normalized coordinates as well. BASE_LEVEL_ONLY is the bit that
+       * actually restricts sampling to level 0.
+       */
+      hi |= TGR3D_TEX_TEXDESC_HI_NORMALIZE__MASK;
+
+      /*
+       * Levels now have storage and are uploaded to the right place, but the
+       * sampler never picks one: with LOD_MIN/LOD_MAX set and LERP_MIP on, a
+       * texture whose levels are flat distinct colours still reads level 0 at
+       * every minification, where softpipe picks levels 2 and 4
+       * (tests/miptest). The descriptor carries no per-level address, so where
+       * the sampler expects to find level 1 is still unknown. Sample level 0
+       * and say so, rather than leave minification reading somewhere random.
+       */
+      (void)mipmapped;
+      (void)mip_linear;
+      hi |= TGR3D_TEX_TEXDESC_HI_BASE_LEVEL_ONLY__MASK;
 
       if (pot) {
          hi |= TGR3D_TEX_TEXDESC_HI_LOG2_WIDTH(log2_width);

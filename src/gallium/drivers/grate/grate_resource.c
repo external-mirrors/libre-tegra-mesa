@@ -170,12 +170,16 @@ grate_resource_transfer_map(struct pipe_context *pcontext,
    ptrans->level = level;
    ptrans->usage = usage;
    ptrans->box = *box;
-   ptrans->stride = resource->pitch;
+   unsigned lvl = MIN2(level, (unsigned)(GRATE_MAX_MIP_LEVELS - 1));
+   unsigned lpitch = resource->level_pitch[lvl] ? resource->level_pitch[lvl]
+                                                : resource->pitch;
+
+   ptrans->stride = lpitch;
    ptrans->layer_stride = ptrans->stride;
    *transfer = ptrans;
 
-   return (uint8_t *)ret +
-          box->y * resource->pitch +
+   return (uint8_t *)ret + resource->level_offset[lvl] +
+          box->y * lpitch +
           box->x * util_format_get_blocksize(presource->format);
 }
 
@@ -323,7 +327,34 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
       resource->format = format;
    }
 
-   size = resource->pitch * height;
+   /*
+    * Give every mip level storage of its own. Nothing here used to look at
+    * last_level at all: the object was sized for level 0, so a texture with a
+    * mip chain had the sampler reading past the end of it, which faults the
+    * SMMU and hangs gr3d hard enough to take the machine down - glmark2's
+    * texture scene rebooted this device. Uploads were as bad, since
+    * transfer_map ignored the level and wrote every one of them over level 0.
+    */
+   unsigned levels = MIN2(template->last_level + 1, GRATE_MAX_MIP_LEVELS);
+   unsigned lw = template->width0, lh = height;
+   unsigned blocksize = util_format_get_blocksize(template->format);
+
+   size = 0;
+   for (unsigned l = 0; l < levels; ++l) {
+      unsigned lpitch = lw * blocksize;
+
+      if (l == 0)
+         lpitch = resource->pitch;
+      else if (!util_is_power_of_two_or_zero(lw))
+         lpitch = align(lpitch, GRATE_TEXTURE_PITCH_ALIGN);
+
+      resource->level_offset[l] = size;
+      resource->level_pitch[l] = lpitch;
+      size += lpitch * MAX2(lh, 1u);
+
+      lw = MAX2(lw >> 1, 1u);
+      lh = MAX2(lh >> 1, 1u);
+   }
 
    resource->bo = grate_bo_alloc(screen->drm, size, flags);
    if (!resource->bo) {
