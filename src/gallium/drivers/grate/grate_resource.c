@@ -1,8 +1,11 @@
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/u_surface.h"
 #include "util/u_pack_color.h"
 #include "util/u_transfer.h"
 #include "util/u_inlines.h"
@@ -20,6 +23,8 @@
  * of some abstraction to handle handles in a Tegra-specific winsys
  * implementation.
  */
+#include "drm-uapi/drm_fourcc.h"
+
 #include "frontend/drm_driver.h"
 
 
@@ -58,7 +63,63 @@ grate_resource_get_handle(struct pipe_screen *pscreen,
    }
 
    handle->stride = resource->pitch;
+   handle->offset = 0;
+   handle->modifier = DRM_FORMAT_MOD_LINEAR;
    return true;
+}
+
+/*
+ * DRI3 and the dmabuf export path ask for the layout through this rather than
+ * through get_handle, and without it they end up passing DRM_FORMAT_MOD_INVALID
+ * to the X server, which answers BadAlloc. We only ever hand out single plane
+ * linear buffers, so the answers are all short.
+ */
+static bool
+grate_resource_get_param(struct pipe_screen *pscreen,
+                         struct pipe_context *pcontext,
+                         struct pipe_resource *presource,
+                         unsigned plane, unsigned layer, unsigned level,
+                         enum pipe_resource_param param,
+                         unsigned usage, uint64_t *value)
+{
+   struct grate_resource *resource = grate_resource(presource);
+   struct winsys_handle handle;
+
+   switch (param) {
+   case PIPE_RESOURCE_PARAM_NPLANES:
+      *value = 1;
+      return true;
+   case PIPE_RESOURCE_PARAM_STRIDE:
+      *value = resource->pitch;
+      return true;
+   case PIPE_RESOURCE_PARAM_OFFSET:
+      *value = 0;
+      return true;
+   case PIPE_RESOURCE_PARAM_MODIFIER:
+      *value = DRM_FORMAT_MOD_LINEAR;
+      return true;
+   case PIPE_RESOURCE_PARAM_LAYER_STRIDE:
+      *value = (uint64_t)resource->pitch * presource->height0;
+      return true;
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED:
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS:
+   case PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD:
+      memset(&handle, 0, sizeof(handle));
+      if (param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD)
+         handle.type = WINSYS_HANDLE_TYPE_FD;
+      else if (param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS)
+         handle.type = WINSYS_HANDLE_TYPE_KMS;
+      else
+         handle.type = WINSYS_HANDLE_TYPE_SHARED;
+
+      if (!grate_resource_get_handle(pscreen, pcontext, presource, &handle, usage))
+         return false;
+
+      *value = handle.handle;
+      return true;
+   default:
+      return false;
+   }
 }
 
 static void
@@ -86,6 +147,15 @@ grate_resource_transfer_map(struct pipe_context *pcontext,
    if (usage & PIPE_MAP_DIRECTLY)
       return NULL;
 
+   /*
+    * Nothing records which resource a submitted job touched, so the only safe
+    * thing is to let everything already submitted land before handing out a
+    * CPU pointer. Otherwise a readback races the GPU still writing the render
+    * target, which is what made large frames come back half drawn.
+    */
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
+      grate_context_flush_streams(context);
+
    ptrans = slab_alloc(&context->transfer_pool);
    if (!ptrans)
       return NULL;
@@ -100,12 +170,16 @@ grate_resource_transfer_map(struct pipe_context *pcontext,
    ptrans->level = level;
    ptrans->usage = usage;
    ptrans->box = *box;
-   ptrans->stride = resource->pitch;
+   unsigned lvl = MIN2(level, (unsigned)(GRATE_MAX_MIP_LEVELS - 1));
+   unsigned lpitch = resource->level_pitch[lvl] ? resource->level_pitch[lvl]
+                                                : resource->pitch;
+
+   ptrans->stride = lpitch;
    ptrans->layer_stride = ptrans->stride;
    *transfer = ptrans;
 
-   return (uint8_t *)ret +
-          box->y * resource->pitch +
+   return (uint8_t *)ret + resource->level_offset[lvl] +
+          box->y * lpitch +
           box->x * util_format_get_blocksize(presource->format);
 }
 
@@ -180,15 +254,71 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
    height = template->height0;
 
    resource->tiled = 0;
-   if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW |
-                         PIPE_BIND_SCANOUT | PIPE_BIND_DEPTH_STENCIL)) {
-      if (template->bind & PIPE_BIND_DEPTH_STENCIL)
-         resource->pitch = align(resource->pitch, 256);
-      else
-         resource->pitch = align(resource->pitch, 32);
 
+   /*
+    * A texture descriptor carries no stride. For a power-of-two texture the
+    * sampler takes it from LOG2_WIDTH, i.e. the natural pitch; for any other
+    * size it is described by WIDTH/HEIGHT and the stride is the width rounded
+    * up to GRATE_TEXTURE_PITCH_ALIGN. Allocate to match or every row is read
+    * at a growing offset and the image skews. The alignment was found by
+    * sweeping it against tests/fptest, which only passes in full at 64.
+    *
+    * Buffers anyone outside the driver can see keep the stride the display
+    * controller and importers agreed on instead, even though that makes them
+    * sample incorrectly: changing it corrupts scanout.
+    */
+   /*
+    * Everything the GPU touches uses the same row stride rule, so scanout and
+    * sampling can share a buffer: round the pitch up to
+    * GRATE_TEXTURE_PITCH_ALIGN. A power-of-two texture is described to the
+    * sampler by LOG2_WIDTH/LOG2_HEIGHT and keeps its natural pitch. The pitch
+    * chosen here is the one handed to KMS by resource_get_handle(), so the
+    * display controller follows along.
+    */
+   bool pot = util_is_power_of_two_or_zero(template->width0) &&
+              util_is_power_of_two_or_zero(template->height0);
+
+   if (template->bind & PIPE_BIND_DEPTH_STENCIL) {
+      resource->pitch = align(resource->pitch, 256);
       flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
+   } else if (template->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
+                                PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SHARED |
+                                PIPE_BIND_SAMPLER_VIEW)) {
+      if (!pot)
+         resource->pitch = align(resource->pitch, GRATE_TEXTURE_PITCH_ALIGN);
+
+      bool scanout = template->bind & (PIPE_BIND_SCANOUT |
+                                       PIPE_BIND_DISPLAY_TARGET);
+
+      /*
+       * The sampler addresses rows within the power-of-two extent enclosing
+       * the height, not just the visible ones, and reading past the end of
+       * the object faults the SMMU - tegra-mc reports texsrd2 page faults.
+       * Back those rows with memory; the descriptor still describes the
+       * visible size.
+       *
+       * A scanned out buffer is left alone: the display reads exactly the
+       * rows it was told about, and padding only confuses anything that
+       * samples it.
+       */
+      if ((template->bind & PIPE_BIND_SAMPLER_VIEW) && !scanout)
+         height = util_next_power_of_two(height);
+
+      /*
+       * BOTTOM_UP matches GL's bottom left origin, which suits a target
+       * nobody samples. A texture is uploaded top down, so flipping it would
+       * stand the image on its head, and a scanout buffer gets its flip
+       * handled in the viewport instead (see emit_viewport).
+       */
+      if (!(template->bind & PIPE_BIND_SAMPLER_VIEW))
+         flags = DRM_TEGRA_GEM_CREATE_BOTTOM_UP;
    }
+
+   if (getenv("GRATE_RES_TRACE"))
+      fprintf(stderr, "grate: RES %4ux%-4u bind=0x%-5x pitch=%-6u rows=%-5u fmt=%s\n",
+              template->width0, template->height0, template->bind,
+              resource->pitch, height,
+              util_format_short_name(template->format));
 
    if (template->target != PIPE_BUFFER) {
       /* pick pixel-format */
@@ -197,7 +327,34 @@ grate_screen_resource_create(struct pipe_screen *pscreen,
       resource->format = format;
    }
 
-   size = resource->pitch * height;
+   /*
+    * Give every mip level storage of its own. Nothing here used to look at
+    * last_level at all: the object was sized for level 0, so a texture with a
+    * mip chain had the sampler reading past the end of it, which faults the
+    * SMMU and hangs gr3d hard enough to take the machine down - glmark2's
+    * texture scene rebooted this device. Uploads were as bad, since
+    * transfer_map ignored the level and wrote every one of them over level 0.
+    */
+   unsigned levels = MIN2(template->last_level + 1, GRATE_MAX_MIP_LEVELS);
+   unsigned lw = template->width0, lh = height;
+   unsigned blocksize = util_format_get_blocksize(template->format);
+
+   size = 0;
+   for (unsigned l = 0; l < levels; ++l) {
+      unsigned lpitch = lw * blocksize;
+
+      if (l == 0)
+         lpitch = resource->pitch;
+      else if (!util_is_power_of_two_or_zero(lw))
+         lpitch = align(lpitch, GRATE_TEXTURE_PITCH_ALIGN);
+
+      resource->level_offset[l] = size;
+      resource->level_pitch[l] = lpitch;
+      size += lpitch * MAX2(lh, 1u);
+
+      lw = MAX2(lw >> 1, 1u);
+      lh = MAX2(lh >> 1, 1u);
+   }
 
    resource->bo = grate_bo_alloc(screen->drm, size, flags);
    if (!resource->bo) {
@@ -231,7 +388,9 @@ grate_screen_resource_from_handle(struct pipe_screen *pscreen,
    case WINSYS_HANDLE_TYPE_FD:
       resource->bo = grate_bo_import(screen->drm, handle->handle);
       if (!resource->bo) {
-         fprintf(stderr, "grate_bo_import() failed\n");
+         fprintf(stderr, "grate_bo_import() failed for %ux%u fmt=%s stride=%u\n",
+                 template->width0, template->height0,
+                 util_format_short_name(template->format), handle->stride);
          goto fail;
       }
       break;
@@ -242,6 +401,11 @@ grate_screen_resource_from_handle(struct pipe_screen *pscreen,
       goto fail;
 
    resource->pitch = handle->stride;
+   if (getenv("GRATE_RES_TRACE"))
+      fprintf(stderr, "grate: IMPORT %ux%u stride=%u (sampler wants %u)\n",
+              template->width0, template->height0, handle->stride,
+              util_next_power_of_two(template->width0) *
+              util_format_get_blocksize(template->format));
 
    format = grate_pixel_format(template->format);
    assert(format >= 0);
@@ -261,6 +425,7 @@ grate_screen_resource_init(struct pipe_screen *pscreen)
    pscreen->resource_create = grate_screen_resource_create;
    pscreen->resource_from_handle = grate_screen_resource_from_handle;
    pscreen->resource_get_handle = grate_resource_get_handle;
+   pscreen->resource_get_param = grate_resource_get_param;
    pscreen->resource_destroy = grate_resource_destroy;
 }
 
@@ -274,7 +439,14 @@ grate_resource_copy_region(struct pipe_context *pcontext,
                            unsigned int src_level,
                            const struct pipe_box *box)
 {
-   grate_unimplemented();
+   /*
+    * This was a silent no-op, so anything built on a resource copy - which
+    * includes a compositor capturing its own output - quietly kept whatever
+    * the destination happened to contain. Go through the CPU helper: it maps
+    * both resources, which now waits for the GPU, so it is correct if slow.
+    */
+   util_resource_copy_region(pcontext, dst, dst_level, dstx, dsty, dstz,
+                             src, src_level, box);
 }
 
 static void
@@ -387,9 +559,11 @@ fill(struct grate_stream *stream, uint32_t **ptrp,
    switch (blocksize) {
    case 1:
       value |= 0 << 16;
+      fill_value = (fill_value & 0xff) * 0x01010101u;
       break;
    case 2:
       value |= 1 << 16;
+      fill_value = (fill_value & 0xffff) * 0x00010001u;
       break;
    case 4:
       value |= 2 << 16;
@@ -397,6 +571,13 @@ fill(struct grate_stream *stream, uint32_t **ptrp,
    default:
       UNREACHABLE("invalid blocksize");
    }
+   /*
+    * srcfgc is a 32 bit pattern whatever the pixel size, so a narrower fill
+    * has to be replicated across the word. Passing a bare 16 bit value left
+    * every second pixel zero: a depth buffer "cleared" to 1.0 came out as
+    * alternating 1.0 and 0.0, so every second column failed the depth test
+    * and kept the background. That is the striping on every lit scene.
+    */
    GRATE_PUSHBUF_WORD(ptr, value);           /* 0x01f - controlmain */
 
    GRATE_PUSHBUF_WORD(ptr, 0x000000cc);      /* 0x020 - ropfade */
@@ -436,6 +617,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
 
    fb = &context->framebuffer.base;
 
+
    err = grate_stream_begin(stream, &ptr);
    if (err < 0) {
       grate_loge("grate_stream_begin() failed: %d\n", err);
@@ -467,6 +649,7 @@ grate_clear(struct pipe_context *pcontext, unsigned int buffers,
    
    grate_stream_end(stream, &ptr);
    grate_stream_flush(stream, true);
+
 }
 
 static void
@@ -534,7 +717,13 @@ grate_clear_depth_stencil(struct pipe_context *pipe,
 static void
 grate_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
 {
-   //TODO grate_unimplemented();
+   /*
+    * Called when a resource is about to be handed to the window system - for
+    * weston, the buffer it is about to scan out. Nothing else waits for the
+    * GPU on that path, so without this the compositor flips a frame that is
+    * still being drawn, and the display shows part of the previous one.
+    */
+   grate_context_flush_streams(grate_context(ctx));
 }
 
 void

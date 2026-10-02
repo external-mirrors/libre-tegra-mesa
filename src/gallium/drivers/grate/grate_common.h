@@ -50,4 +50,31 @@
       mesa_logd("GRATE: %s()\n", __func__); \
 } while (0)
 
+
+/*
+ * Pixel-sequencer output window, matching libgrate. MAX_QID in
+ * REG_TGR3D_GLOBAL_PIX_ATTR is derived from the same figure:
+ * (GRATE_PSEQ_MAX_OUT - 1) / (alu_buffer_size * 4).
+ */
+#define GRATE_PSEQ_MAX_OUT   0x12c
+#define GRATE_PSEQ_MIN_OUT   0x0c8
+#define GRATE_ALU_BUFFER_SIZE 1
+
+/* libgrate calls this NOT_POW2_DIMENSIONS; absent from our register header */
+#define GRATE_TEXDESC_HI_NOT_POW2 0x00000040
+
+/* fragment uniform registers: file indices 32..63, uploaded via ALU_GLOBALS */
+#define GRATE_FP_UNIFORM_BASE  32
+#define GRATE_FP_NUM_UNIFORMS  32
+
+/* how long to wait for a submitted job, in nanoseconds */
+#define GRATE_JOB_TIMEOUT_NS 1000000000ull
+
+/* row stride the texture sampler assumes, in bytes */
+/* IDX_DRAW_PRIM's VTX_COUNT is a 12 bit field, so this many
+ * vertices go out per draw packet at most */
+#define GRATE_MAX_DRAW_VERTICES 4096
+
+#define GRATE_TEXTURE_PITCH_ALIGN 64
+
 #endif // GRATE_COMMON_H
