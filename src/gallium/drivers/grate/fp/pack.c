@@ -1,5 +1,48 @@
 #include "fpir.h"
 
+#include <string.h>
+
+/*
+ * FP20: sign at bit 19, 6-bit exponent (bias 31) at 13..18, 13 stored
+ * significand bits at 0..12 (docs/fragment-shader-isa.md, "FP20").
+ */
+uint32_t
+grate_fp20_from_float(float f)
+{
+   union { float f; uint32_t u; } v;
+   v.f = f;
+
+   uint32_t sign = (v.u >> 31) & 1;
+   int exp = (int)((v.u >> 23) & 0xff) - 127;
+   uint32_t mant = v.u & 0x7fffff;
+
+   if (f == 0.0f || exp < -31)
+      return sign << 19;
+
+   if (exp > 32) {           /* saturate rather than wrap the exponent */
+      exp = 32;
+      mant = 0x7fffff;
+   }
+
+   return (sign << 19) | (((uint32_t)(exp + 31) & 0x3f) << 13) | (mant >> 10);
+}
+
+void
+grate_fp_pack_alu_constants(uint32_t *dst, const uint32_t *constants)
+{
+   uint64_t w = ((uint64_t)(constants[0] & 0xfffff) << 4) |
+                ((uint64_t)(constants[1] & 0xfffff) << 24) |
+                ((uint64_t)(constants[2] & 0xfffff) << 44);
+
+   /*
+    * Constant words are NOT swapped, unlike regular ALU instructions
+    * (docs/fragment-shader-isa.md: "the ALU3 instruction words, constituting
+    * immediate constants, shouldn't be swapped").
+    */
+   dst[0] = (uint32_t)w;
+   dst[1] = (uint32_t)(w >> 32);
+}
+
 void
 grate_fp_pack_alu(uint32_t *dst, struct fp_alu_instr *instr)
 {
@@ -54,6 +97,8 @@ grate_fp_pack_alu(uint32_t *dst, struct fp_alu_instr *instr)
       .opcode = instr->op,
       .dst_reg = instr->dst.index,
       .saturate_result = instr->dst.saturate,
+      .scale_result = instr->scale,
+      .condition_code = instr->condition,
 
       .write_low_sub_reg = instr->dst.write_low_sub_reg,
       .write_high_sub_reg = instr->dst.write_high_sub_reg,
@@ -61,14 +106,26 @@ grate_fp_pack_alu(uint32_t *dst, struct fp_alu_instr *instr)
       .rA_reg_select = instr->src[0].index,
       .rA_fixed10 = instr->src[0].datatype != FP_DATATYPE_FP20,
       .rA_sub_reg_select_high = instr->src[0].sub_reg_select_high,
+      .rA_negate = instr->src[0].negate,
+      .rA_absolute_value = instr->src[0].absolute_value,
+      .rA_scale_by_two = instr->src[0].scale_by_two,
+      .rA_minus_one = instr->src[0].minus_one,
 
       .rB_reg_select = instr->src[1].index,
       .rB_fixed10 = instr->src[1].datatype != FP_DATATYPE_FP20,
       .rB_sub_reg_select_high = instr->src[1].sub_reg_select_high,
+      .rB_negate = instr->src[1].negate,
+      .rB_absolute_value = instr->src[1].absolute_value,
+      .rB_scale_by_two = instr->src[1].scale_by_two,
+      .rB_minus_one = instr->src[1].minus_one,
 
       .rC_reg_select = instr->src[2].index,
       .rC_fixed10 = instr->src[2].datatype != FP_DATATYPE_FP20,
       .rC_sub_reg_select_high = instr->src[2].sub_reg_select_high,
+      .rC_negate = instr->src[2].negate,
+      .rC_absolute_value = instr->src[2].absolute_value,
+      .rC_scale_by_two = instr->src[2].scale_by_two,
+      .rC_minus_one = instr->src[2].minus_one,
 
       .rD_reg_select = instr->src[3].index == instr->src[2].index,
       .rD_fixed10 = instr->src[3].datatype != FP_DATATYPE_FP20,
@@ -87,6 +144,19 @@ grate_fp_pack_alu(uint32_t *dst, struct fp_alu_instr *instr)
    /* copy packed instruction into destination */
    for (int i = 0; i < 2; ++i)
       dst[i] = tmp.words[1 - i];
+}
+
+uint32_t
+grate_fp_pack_tex(struct fp_tex_instr *instr)
+{
+   if (!instr->enable)
+      return 0;
+
+   return (instr->sampler & 0xf) |
+          ((uint32_t)instr->src_r2_r3 << 4) |
+          ((uint32_t)instr->dst_r2_r3 << 5) |
+          (1u << 10) |
+          ((uint32_t)instr->bias << 12);
 }
 
 uint32_t

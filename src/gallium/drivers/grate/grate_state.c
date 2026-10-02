@@ -1,14 +1,18 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include <math.h>
 
 #include "util/format/u_format.h"
 #include "util/u_bitcast.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_framebuffer.h"
 
+#include "fp/fpir.h"
 #include "grate_common.h"
 #include "grate_context.h"
 #include "grate_program.h"
@@ -37,7 +41,8 @@ grate_set_constant_buffer(struct pipe_context *pcontext, enum mesa_shader_stage 
 }
 
 static void grate_add_render_target(struct grate_context *context,
-                                    const struct pipe_surface *ref) 
+                                    const struct pipe_surface *ref,
+                                    bool is_depth) 
 {
    if (!ref->texture) {
       fprintf(stderr, "%s: texture at %p null!", __func__, ref);
@@ -51,14 +56,43 @@ static void grate_add_render_target(struct grate_context *context,
    }
    struct grate_resource *res = grate_resource(ref->texture);
    uint32_t rt_params;
+
+   if (ref->texture->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET))
+      context->framebuffer.scanout = true;
    
+   if (grate_debug & GRATE_DEBUG_TRACE)
+      fprintf(stderr, "GRATE RT: pipe_format=%s hw_format=%d\n",
+              util_format_short_name(ref->format), res->format);
+   unsigned rlvl = MIN2(ref->level, (unsigned)(GRATE_MAX_MIP_LEVELS - 1));
+   unsigned rpitch = res->level_pitch[rlvl] ? res->level_pitch[rlvl] : res->pitch;
+
    rt_params  = TGR3D_GLOBAL_SURFDESC_SURF_FORMAT(res->format);
-   rt_params |= TGR3D_GLOBAL_SURFDESC_ARRAY_STRIDE(res->pitch);
+   rt_params |= TGR3D_GLOBAL_SURFDESC_ARRAY_STRIDE(rpitch);
    rt_params |= TGR3D_GLOBAL_SURFDESC_STRUCTURE(res->tiled);
    
+   /*
+    * Rendering into a mip level has to land at that level's offset. Without
+    * this every level Mesa generates was written over level 0, so a mip chain
+    * had storage but no contents and minification stayed aliased.
+    */
+   unsigned lvl = MIN2(ref->level, (unsigned)(GRATE_MAX_MIP_LEVELS - 1));
+
    context->framebuffer.rt_params[context->framebuffer.num_rts] = rt_params;
    context->framebuffer.rt_bos[context->framebuffer.num_rts] = res->bo;
-   context->framebuffer.rt_mask |= 1 << context->framebuffer.num_rts;
+   context->framebuffer.rt_offset[context->framebuffer.num_rts] =
+      res->level_offset[lvl];
+
+   /*
+    * The depth buffer needs a surface slot of its own for its address and
+    * format, but it must not appear in DW_ST_ENABLE: that is the mask of
+    * surfaces the fragment stage stores colour into, and listing depth there
+    * has the shader's colour written over the depth values.
+    */
+   if (is_depth)
+      context->framebuffer.zs_index = context->framebuffer.num_rts;
+   else
+      context->framebuffer.rt_mask |= 1 << context->framebuffer.num_rts;
+
    context->framebuffer.num_rts++;
 }
 
@@ -66,20 +100,27 @@ static void
 grate_set_framebuffer_state(struct pipe_context *pcontext,
                             const struct pipe_framebuffer_state *framebuffer)
 {
+   grate_context(pcontext)->framebuffer.scanout = false;
    struct grate_context *context = grate_context(pcontext);
    struct pipe_framebuffer_state *cso = &context->framebuffer.base;
    context->framebuffer.rt_mask = 0;
    context->framebuffer.num_rts = 0;
+   context->framebuffer.zs_index = -1;
+   context->framebuffer.rt_base = 0;
 
    util_copy_framebuffer_state(cso, framebuffer);
 
+
+   context->framebuffer.rt_base = context->framebuffer.num_rts;
+
    for (unsigned int i = 0; i < framebuffer->nr_cbufs; i++) {
-      grate_add_render_target(context, &framebuffer->cbufs[i]);
+      grate_add_render_target(context, &framebuffer->cbufs[i], false);
    }
-   
+
    if (framebuffer->zsbuf.texture) {
-      grate_add_render_target(context, &framebuffer->zsbuf);
+      grate_add_render_target(context, &framebuffer->zsbuf, true);
    }
+
 
    /* prepare the scissor-registers for the non-scissor case */
    context->no_scissor[0]  = host1x_opcode_incr(REG_TGR3D_SU_SCISSOR_X, 2);
@@ -102,8 +143,12 @@ grate_set_scissor_states(struct pipe_context *pcontext,
                          unsigned num_scissors,
                          const struct pipe_scissor_state * scissors)
 {
+   struct grate_context *context = grate_context(pcontext);
+
    assert(num_scissors == 1);
-   grate_unimplemented();
+   assert(start_slot == 0);
+
+   context->scissor = scissors[0];
 }
 
 static void
@@ -149,6 +194,11 @@ grate_set_viewport_states(struct pipe_context *pcontext,
    context->guardband[3] = u_bitcast_f2u(6.99);
 
    context->y_invert = viewports[0].scale[1] < 0.0f;
+
+   if (getenv("GRATE_VP_TRACE"))
+      fprintf(stderr, "grate: viewport translate=(%.1f,%.1f) scale=(%.1f,%.1f) y_invert=%d\n",
+              viewports[0].translate[0], viewports[0].translate[1],
+              viewports[0].scale[0], viewports[0].scale[1], context->y_invert);
 }
 
 static void
@@ -170,7 +220,31 @@ grate_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                         unsigned unbind_num_trailing_slots,
                         struct pipe_sampler_view **views)
 {
-   grate_unimplemented();
+   struct grate_context *context = grate_context(pctx);
+
+   /* only the fragment stage can sample on this hardware */
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+
+   for (unsigned i = 0; i < num_views; ++i) {
+      unsigned slot = start_slot + i;
+      if (slot >= GRATE_MAX_SAMPLERS)
+         break;
+      pipe_sampler_view_reference(&context->sampler_views[slot],
+                                  views ? views[i] : NULL);
+   }
+
+   for (unsigned i = 0; i < unbind_num_trailing_slots; ++i) {
+      unsigned slot = start_slot + num_views + i;
+      if (slot >= GRATE_MAX_SAMPLERS)
+         break;
+      pipe_sampler_view_reference(&context->sampler_views[slot], NULL);
+   }
+
+   context->num_sampler_views = 0;
+   for (unsigned i = 0; i < GRATE_MAX_SAMPLERS; ++i)
+      if (context->sampler_views[i])
+         context->num_sampler_views = i + 1;
 }
 
 static void
@@ -232,7 +306,15 @@ grate_create_blend_state(struct pipe_context *pcontext,
 static void
 grate_bind_blend_state(struct pipe_context *pcontext, void *so)
 {
-   grate_unimplemented();
+   /*
+    * Kept, but it changes nothing yet: there is no blending in the register
+    * set at all - the data write stage offers a logic op and nothing else -
+    * and the one destination read path the hardware does have (see
+    * GLOBAL_MEMORY_OUTPUT_READS in grate_draw.c) delivers the destination
+    * after the fragment program has run, so a shader cannot combine with it.
+    * Everything therefore draws opaque.
+    */
+   grate_context(pcontext)->blend = so;
 }
 
 static void
@@ -268,7 +350,23 @@ grate_bind_sampler_states(struct pipe_context *pcontext,
                           unsigned start_slot, unsigned num_samplers,
                           void **samplers)
 {
-   grate_unimplemented();
+   struct grate_context *context = grate_context(pcontext);
+
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+
+   for (unsigned i = 0; i < num_samplers; ++i) {
+      unsigned slot = start_slot + i;
+      if (slot >= GRATE_MAX_SAMPLERS)
+         break;
+      context->samplers[slot] = samplers ? samplers[i] : NULL;
+   }
+
+   context->num_samplers = 0;
+   for (unsigned i = 0; i < GRATE_MAX_SAMPLERS; ++i)
+      if (context->samplers[i])
+         context->num_samplers = i + 1;
 }
 
 static void
@@ -392,6 +490,7 @@ grate_compare_func(enum pipe_compare_func func)
    case PIPE_FUNC_LEQUAL: return TGR3D_FUNC_LEQUAL;
    case PIPE_FUNC_GREATER: return TGR3D_FUNC_GREATER;
    case PIPE_FUNC_NOTEQUAL: return TGR3D_FUNC_NOTEQUAL;
+   case PIPE_FUNC_GEQUAL: return TGR3D_FUNC_GEQUAL;
    case PIPE_FUNC_ALWAYS: return TGR3D_FUNC_ALWAYS;
    default: UNREACHABLE("unknown pipe_compare_func");
    }
@@ -410,9 +509,33 @@ grate_create_zsa_state(struct pipe_context *pcontext,
    so->base = *template;
 
    uint32_t depth_test = 0;
+   /*
+    * Hardware depth is off unless GRATE_HW_DEPTH is set, because the depth
+    * unit does not use the depth buffer. Measured: clearing the depth buffer
+    * to 1.0 or to 0.0 makes no difference to the test, while the colours
+    * written into surface 0 do - the unit reads and writes surface 0, the
+    * colour buffer, whatever QR_Z_TEST's Z_SURF_PTR says. Sweeping that field,
+    * every other bit of QR_Z_TEST, DW_ST_ENABLE, SURFOVERADDR, the OVERLAP
+    * descriptor bit, GLOBAL_FLUSH and both depth formats changes nothing, and
+    * putting the depth buffer in surface 0 instead stops colour reaching the
+    * framebuffer at all.
+    *
+    * That is why every lit scene came out in alternating columns: the colour
+    * buffer cleared to opaque black is BGRA 00 00 00 ff, which read as pairs
+    * of 16 bit depths is 0x0000, 0xff00, 0x0000, ... so every second pixel
+    * tested against 0.0 and failed. Enabling it also has the rasterizer write
+    * depth over the left half of every colour row.
+    *
+    * Leaving it off costs correct occlusion, which matters to a 3D app but not
+    * to a compositor, and buys a picture that is merely flat rather than
+    * corrupt. The state is still translated so that turning the switch on is
+    * all it takes to carry on investigating.
+    */
+   bool hw_depth = getenv("GRATE_HW_DEPTH") != NULL;
+
    depth_test |= TGR3D_QR_Z_TEST_Z_FUNC(grate_compare_func(template->depth_func));
-   depth_test |= TGR3D_QR_Z_TEST_Z_ENABLE(template->depth_enabled);
-   depth_test |= TGR3D_QR_Z_TEST_QRAST_FB_WRITE(template->depth_writemask);
+   depth_test |= TGR3D_QR_Z_TEST_Z_ENABLE(hw_depth && template->depth_enabled);
+   depth_test |= TGR3D_QR_Z_TEST_QRAST_FB_WRITE(hw_depth && template->depth_writemask);
    depth_test |= TGR3D_QR_Z_TEST_Z_CLAMP(TGR3D_Z_CLAMP_KILL);
 
    so->commands[0] = host1x_opcode_incr(REG_TGR3D_QR_Z_TEST, 1);
@@ -592,17 +715,143 @@ emit_render_targets(struct grate_context *context, uint32_t **ptrp)
 
    GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_GLOBAL_SURFADDR(0), fb->num_rts));
    for (i = 0; i < fb->num_rts; ++i) {
-      grate_stream_push_reloc(stream, ptrp, fb->rt_bos[i], 0);
+      grate_stream_push_reloc(stream, ptrp, fb->rt_bos[i], fb->rt_offset[i]);
    }
+
 
    GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_DW_ST_ENABLE, 1));
    GRATE_PUSHBUF_WORD(*ptrp, fb->rt_mask);
+}
+
+/*
+ * Texture descriptors, following libgrate's grate_3d_set_texture_desc():
+ * DESC_LO carries format and filter/wrap state, DESC_HI the dimensions, given
+ * as log2 for power-of-two textures and literally otherwise.
+ */
+static void
+emit_textures(struct grate_context *context, uint32_t **ptrp)
+{
+   struct grate_stream *stream = &context->gr3d->stream;
+   unsigned num = context->num_sampler_views;
+
+   if (num == 0)
+      return;
+
+   for (unsigned i = 0; i < num; ++i) {
+      struct pipe_sampler_view *view = context->sampler_views[i];
+      if (!view || !view->texture)
+         continue;
+
+      struct grate_resource *res = grate_resource(view->texture);
+      const struct pipe_sampler_state *smp = context->samplers[i];
+
+      GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_TEX_TEXADDR(i), 1));
+      grate_stream_push_reloc(stream, ptrp, res->bo, 0);
+
+      unsigned width = view->texture->width0;
+      unsigned height = view->texture->height0;
+      int log2_width = util_logbase2(width);
+      int log2_height = util_logbase2(height);
+      bool pot = (width == (1u << log2_width)) && (height == (1u << log2_height));
+
+      bool mag_linear = smp && smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
+      bool min_linear = smp && smp->min_img_filter == PIPE_TEX_FILTER_LINEAR;
+      bool mip_linear = smp && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR;
+      bool mipmapped  = smp && smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE;
+
+
+      uint32_t lo = TGR3D_TEX_TEXDESC_LO_SURF_FORMAT(res->format);
+      if (mag_linear)
+         lo |= TGR3D_TEX_TEXDESC_LO_LERP_MAG;
+      if (min_linear)
+         lo |= TGR3D_TEX_TEXDESC_LO_LERP_MIN;
+      if (smp) {
+         if (smp->wrap_s == PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+            lo |= TGR3D_TEX_TEXDESC_LO_CLAMP_S(TGR3D_CLAMP_CLAMP);
+         if (smp->wrap_t == PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+            lo |= TGR3D_TEX_TEXDESC_LO_CLAMP_T(TGR3D_CLAMP_CLAMP);
+         if (smp->wrap_s == PIPE_TEX_WRAP_MIRROR_REPEAT)
+            lo |= TGR3D_TEX_TEXDESC_LO_MIRROR_S(TGR3D_STATE_ENABLED);
+         if (smp->wrap_t == PIPE_TEX_WRAP_MIRROR_REPEAT)
+            lo |= TGR3D_TEX_TEXDESC_LO_MIRROR_T(TGR3D_STATE_ENABLED);
+      }
+
+      uint32_t hi = 0;
+      /*
+       * Mip levels have storage but the descriptor has no per-level address,
+       * so where the sampler looks for level 1 is not known. Until it is,
+       * always sample level 0: minification aliases, which is a blemish, and
+       * letting the sampler loose on levels it cannot find hangs the GPU.
+       */
+      /*
+       * NORMALIZE is normalized texture coordinates, which is what GL always
+       * wants; it was being used as a mipmap disable, so a mipmapped texture
+       * lost normalized coordinates as well. BASE_LEVEL_ONLY is the bit that
+       * actually restricts sampling to level 0.
+       */
+      hi |= TGR3D_TEX_TEXDESC_HI_NORMALIZE__MASK;
+
+      /*
+       * Levels now have storage and are uploaded to the right place, but the
+       * sampler never picks one: with LOD_MIN/LOD_MAX set and LERP_MIP on, a
+       * texture whose levels are flat distinct colours still reads level 0 at
+       * every minification, where softpipe picks levels 2 and 4
+       * (tests/miptest). The descriptor carries no per-level address, so where
+       * the sampler expects to find level 1 is still unknown. Sample level 0
+       * and say so, rather than leave minification reading somewhere random.
+       */
+      (void)mipmapped;
+      (void)mip_linear;
+      hi |= TGR3D_TEX_TEXDESC_HI_BASE_LEVEL_ONLY__MASK;
+
+      if (pot) {
+         hi |= TGR3D_TEX_TEXDESC_HI_LOG2_WIDTH(log2_width);
+         hi |= TGR3D_TEX_TEXDESC_HI_LOG2_HEIGHT(log2_height);
+      } else {
+         hi |= GRATE_TEXDESC_HI_NOT_POW2;
+         hi |= TGR3D_TEX_TEXDESC_HI_WIDTH(width);
+         hi |= TGR3D_TEX_TEXDESC_HI_HEIGHT(height);
+
+      }
+
+      if (grate_debug & GRATE_DEBUG_TRACE)
+         fprintf(stderr, "GRATE TEX%u: %s %ux%u pitch=%u hw_fmt=%d pot=%d "
+                         "lo=%08x hi=%08x smp=%p\n",
+                 i, util_format_short_name(view->texture->format),
+                 width, height, res->pitch, res->format, pot, lo, hi,
+                 (void *)smp);
+
+      GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_TEX_TEXDESC_LO(i), 2));
+      GRATE_PUSHBUF_WORD(*ptrp, lo);
+      GRATE_PUSHBUF_WORD(*ptrp, hi);
+   }
 }
 
 static void
 emit_scissor(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
+
+   /*
+    * Without this the rasterizer covered the whole target whatever was asked
+    * for, so a compositor repainting only what changed drew every surface
+    * across the entire screen. The scissor arrives in the same window space
+    * the viewport puts fragments in, so it needs no flip of its own.
+    */
+   if (context->rast && context->rast->base.scissor) {
+      const struct pipe_scissor_state *s = &context->scissor;
+      uint32_t words[3];
+
+      words[0] = host1x_opcode_incr(REG_TGR3D_SU_SCISSOR_X, 2);
+      words[1] = TGR3D_SU_SCISSOR_X_MIN(s->minx) |
+                 TGR3D_SU_SCISSOR_X_MAX(s->maxx);
+      words[2] = TGR3D_SU_SCISSOR_Y_MIN(s->miny) |
+                 TGR3D_SU_SCISSOR_Y_MAX(s->maxy);
+
+      grate_stream_push_words(stream, ptrp, words, 3, 0);
+      return;
+   }
+
    grate_stream_push_words(stream, ptrp, context->no_scissor, 3, 0);
 }
 
@@ -610,6 +859,7 @@ static void
 emit_viewport(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
+
    grate_stream_push_words(stream, ptrp, context->viewport, 10, 0);
 }
 
@@ -624,7 +874,35 @@ static void
 emit_zsa_state(struct grate_context *context, uint32_t **ptrp)
 {
    struct grate_stream *stream = &context->gr3d->stream;
-   grate_stream_push_words(stream, ptrp, context->zsa->commands, context->zsa->num_commands, 0);
+   uint32_t commands[4];
+   int n = context->zsa->num_commands;
+
+   assert(n <= (int)ARRAY_SIZE(commands));
+   memcpy(commands, context->zsa->commands, n * sizeof(commands[0]));
+
+   /*
+    * Which surface holds depth belongs to the framebuffer, not to the depth
+    * state object, so it has to be mixed in here. Left at zero, Z_SURF_PTR
+    * names surface 0 - the colour buffer - and the depth test then reads and
+    * writes depth over the colours. That is what turned every lit scene into
+    * alternating columns of right and wrong pixels.
+    */
+   if (context->framebuffer.zs_index >= 0) {
+      uint32_t surf = TGR3D_QR_Z_TEST_Z_SURF_PTR(context->framebuffer.zs_index);
+      commands[1] |= surf;
+      if (n > 2)
+         commands[3] |= surf;
+   } else {
+      /* no depth buffer bound: nothing to test against or write to */
+      uint32_t off = ~(TGR3D_QR_Z_TEST_Z_ENABLE__MASK |
+                       TGR3D_QR_Z_TEST_QRAST_FB_WRITE__MASK);
+      commands[1] &= off;
+      if (n > 2)
+         commands[3] &= off;
+   }
+
+
+   grate_stream_push_words(stream, ptrp, commands, n, 0);
 }
 
 static void
@@ -644,6 +922,34 @@ emit_vs_uniforms(struct grate_context *context, uint32_t **ptrp)
       GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_nonincr(REG_TGR3D_VPE_CONST_DATA, len));
       grate_stream_push_words(stream, ptrp, constbuf->user_buffer, len, 0);
    }
+}
+
+/*
+ * Fragment uniforms live in ALU register file slots 32..63, one scalar each,
+ * and are uploaded as fp20 through REG_TGR3D_ALU_GLOBALS.
+ */
+static void
+emit_fs_uniforms(struct grate_context *context, uint32_t **ptrp)
+{
+   struct grate_stream *stream = &context->gr3d->stream;
+   struct pipe_constant_buffer *constbuf =
+      &context->constant_buffer[MESA_SHADER_FRAGMENT];
+   uint32_t values[GRATE_FP_NUM_UNIFORMS];
+   unsigned num;
+
+   if (constbuf->user_buffer == NULL)
+      return;
+
+   num = MIN2(constbuf->buffer_size / sizeof(float), GRATE_FP_NUM_UNIFORMS);
+   if (num == 0)
+      return;
+
+   const float *src = constbuf->user_buffer;
+   for (unsigned i = 0; i < num; ++i)
+      values[i] = grate_fp20_from_float(src[i]);
+
+   GRATE_PUSHBUF_WORD(*ptrp, host1x_opcode_incr(REG_TGR3D_ALU_GLOBALS(0), num));
+   grate_stream_push_words(stream, ptrp, values, num, 0);
 }
 
 static void
@@ -700,6 +1006,8 @@ grate_emit_state(struct grate_context *context, uint32_t **ptrp)
    emit_zsa_state(context, ptrp);
    emit_attribs(context, ptrp);
    emit_vs_uniforms(context, ptrp);
+   emit_fs_uniforms(context, ptrp);
+   emit_textures(context, ptrp);
    emit_program(context, ptrp);
 }
 

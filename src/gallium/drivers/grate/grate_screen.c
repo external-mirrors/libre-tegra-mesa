@@ -340,7 +340,7 @@ grate_screen_init_shader_caps(struct grate_screen *screen)
    caps->max_tex_indirections = 128;
    caps->max_inputs = 16;
    caps->max_outputs = 16;
-   caps->max_const_buffer0_size = 32;
+   caps->max_const_buffer0_size = GRATE_FP_NUM_UNIFORMS * sizeof(float);
    caps->max_const_buffers = 1;
    caps->max_temps = 16; // scalars
    caps->max_texture_samplers = 16;
@@ -382,7 +382,13 @@ grate_screen_is_format_supported(struct pipe_screen *pscreen,
                                  unsigned storage_sample_count,
                                  unsigned usage)
 {
-   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL)) {
+   /*
+    * Sampler views go through grate_screen_resource_create() too, so an
+    * unsupported format has to be rejected here rather than asserting there.
+    * Saying no lets the frontend pick a format the hardware does have.
+    */
+   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL |
+                PIPE_BIND_SAMPLER_VIEW)) {
       if (grate_pixel_format(format) < 0)
          return false;
    }
@@ -395,7 +401,9 @@ grate_screen_fence_reference(struct pipe_screen *pscreen,
                              struct pipe_fence_handle **ptr,
                              struct pipe_fence_handle *fence)
 {
-   grate_unimplemented();
+   /* no fence objects: flushes are synchronous */
+   if (ptr)
+      *ptr = fence;
 }
 
 static bool
@@ -404,8 +412,8 @@ grate_screen_fence_finish(struct pipe_screen *screen,
                           struct pipe_fence_handle *fence,
                           uint64_t timeout)
 {
-   grate_unimplemented();
-   return false;
+   /* flushes are synchronous, so anything fenced has already landed */
+   return true;
 }
 
 static const uint64_t grate_available_modifiers[] = {
