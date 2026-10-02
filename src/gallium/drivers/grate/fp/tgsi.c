@@ -777,12 +777,6 @@ emit_tgsi_instr(struct grate_fp_shader *fp, const struct tgsi_full_instruction *
    }
 }
 
-#define LINK_SRC(index) ((index) << 3)
-#define LINK_DST(index, comp, type) (((comp) | (type) << 2) << ((index) * 4))
-#define LINK_DST_NONE      0
-#define LINK_DST_FX10_LOW  1
-#define LINK_DST_FX10_HIGH 2
-#define LINK_DST_FP20      3
 
 static void
 emit_tgsi_input(struct grate_fp_shader *fp, const struct tgsi_full_declaration *decl)
@@ -866,102 +860,8 @@ grate_tgsi_to_fp(struct grate_fp_shader *fp, struct tgsi_parse_context *tgsi)
       }
    }
 
-   /*
-    * A shader we could not fully translate must not reach the GPU. A half
-    * translated program is not merely wrong: gr3d hangs on one, and the
-    * kernel then resets it in a loop until the machine goes down. Throw the
-    * program away and store zeroes instead, so the surface is wrong but the
-    * GPU survives and the log says why.
-    */
-   if (fp->unsupported || fp_overflowed) {
-      fprintf(stderr, "GRATE FRAG: shader not translatable, substituting a "
-                      "stub that writes nothing\n");
+   if (fp_overflowed)
+      fp->unsupported = true;
 
-      list_for_each_entry_safe(struct fp_instr, i, &fp->fp_instructions, link)
-         FREE(i);
-      list_for_each_entry_safe(struct fp_alu_instr_packet, p,
-                               &fp->alu_instructions, link)
-         FREE(p);
-      list_for_each_entry_safe(struct fp_mfu_instr, m, &fp->mfu_instructions,
-                               link)
-         FREE(m);
-      list_inithead(&fp->fp_instructions);
-      list_inithead(&fp->alu_instructions);
-      list_inithead(&fp->mfu_instructions);
-
-      struct tgsi_dst_register out = { 0 };
-      out.File = TGSI_FILE_OUTPUT;
-      out.Index = 0;
-      out.WriteMask = TGSI_WRITEMASK_XYZW;
-
-      struct fp_instr *inst = CALLOC_STRUCT(fp_instr);
-      list_inithead(&inst->link);
-      struct fp_alu_instr_packet *pkt = CALLOC_STRUCT(fp_alu_instr_packet);
-      list_inithead(&pkt->link);
-      for (int i = 0; i < 4; ++i)
-         pkt->slots[i] = fp_alu_sMOV(fp_alu_dst(&out, i, false),
-                                     fp_alu_src_zero());
-
-      inst->alu_sched.address = 0;
-      inst->alu_sched.num_instructions = 1;
-      inst->dw.enable = 1;
-      inst->dw.index = 0;
-      inst->dw.src_regs = FP_DW_REGS_R2_R3;
-
-      list_addtail(&pkt->link, &fp->alu_instructions);
-      list_addtail(&inst->link, &fp->fp_instructions);
-   }
-
-   /*
-    * Perspective interpolation needs the barycentric weights computed from
-    * 1/w, and grate's reference shaders fold that into the same MFU
-    * instruction that issues the interpolation:
-    *
-    *    MFU: sfu: rcp r4
-    *         mul0: bar, sfu, bar0
-    *         mul1: bar, sfu, bar1
-    *         ipl: t0.fp20, t0.fp20, NOP, NOP
-    *
-    * A shader with no varyings has no MFU instruction at all, so give it one.
-    */
-   if (list_is_empty(&fp->mfu_instructions)) {
-      struct fp_mfu_instr *mfu = CALLOC_STRUCT(fp_mfu_instr);
-      list_inithead(&mfu->link);
-      list_addtail(&mfu->link, &fp->mfu_instructions);
-
-      list_for_each_entry(struct fp_instr, inst, &fp->fp_instructions, link) {
-         inst->mfu_sched.num_instructions = 1;
-         inst->mfu_sched.address = 0;
-      }
-   }
-
-   /*
-    * The weights are consumed by the interpolators in the very instruction
-    * that computes them, so every MFU instruction that interpolates needs its
-    * own copy of the setup, not just the first one. Giving it only to the
-    * first left every later interpolation reading stale weights: a small error
-    * in a smooth varying, and a completely wrong value in anything that feeds
-    * a texture coordinate or a special function.
-    *
-    * An MFU instruction that interpolates nothing is left alone - that is
-    * where the SFU ops do their own work, and they have no weights to compute.
-    */
-   list_for_each_entry(struct fp_mfu_instr, mfu, &fp->mfu_instructions, link) {
-      bool interpolates = false;
-      for (int i = 0; i < 4; ++i)
-         if (mfu->var[i].op != FP_VAR_OP_NOP)
-            interpolates = true;
-
-      if (!interpolates && mfu->sfu.op != FP_SFU_OP_NOP)
-         continue;
-
-      mfu->sfu.op = FP_SFU_OP_RCP;
-      mfu->sfu.reg = 4;
-      mfu->mul[0].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
-      mfu->mul[0].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
-      mfu->mul[0].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_0;
-      mfu->mul[1].dst = FP_MFU_MUL_DST_BARYCENTRIC_WEIGHT;
-      mfu->mul[1].src[0] = FP_MFU_MUL_SRC_SFU_RESULT;
-      mfu->mul[1].src[1] = FP_MFU_MUL_SRC_BARYCENTRIC_COEF_1;
-   }
+   grate_fp_finish(fp);
 }
