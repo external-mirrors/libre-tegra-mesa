@@ -96,6 +96,9 @@ struct grate_bo *grate_bo_alloc(struct grate_device *drm, uint32_t size, uint32_
     /* Fresh handle */
     assert(!memcmp(bo, &((struct grate_bo){}), sizeof(*bo)));
 
+    /* sets refcnt to 1 and initialises bo->channel_maps */
+    grate_bo_prepare(bo);
+
     bo->handle = args.handle;
     bo->drm = drm;
     bo->size = args.size;
