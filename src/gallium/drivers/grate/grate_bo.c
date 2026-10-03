@@ -60,6 +60,13 @@ static void grate_bo_free(struct grate_bo *bo)
        drm_tegra_channel_unmap(*mapping);
     }
     util_dynarray_fini(&bo->channel_maps);
+
+    /*
+     * The slot stays in drm->bo_map, keyed by GEM handle, and the kernel
+     * recycles handles. Clear it so the next grate_bo_alloc() that lands on
+     * this handle sees a fresh entry. Called with bo_map_lock held.
+     */
+    memset(bo, 0, sizeof(*bo));
 }
 
 static void grate_bo_prepare(struct grate_bo *bo)
