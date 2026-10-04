@@ -323,7 +323,7 @@ grate_draw_vbo(struct pipe_context *pcontext,
 
    err = grate_stream_begin(stream, &ptr);
    if (err < 0) {
-      grate_msg("grate_stream_begin() failed: %d\n", err);
+      grate_loge("grate_stream_begin() failed: %d\n", err);
       return;
    }
 
